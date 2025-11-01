@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -291,7 +292,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 }
 
 // executeIntent 执行意图：触发 ck8sUserconf shell 命令，支持多个环境，并必须传递 kubeconfig 路径
-// 动态生成 base_sa_name = username + "_" + cfg.BaseSAName + "_" + intent
+// 使用 goroutine 防止单个命令挂起阻塞 Bot，并捕获输出日志
 func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	// 根据用户名获取数字用户 ID
 	numericUserID := getUserID(username)
@@ -317,42 +318,68 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 		return
 	}
 
-	// 记录成功和失败的环境
-	var successes, failures []string
+	// 使用 WaitGroup 和 channels 异步执行每个环境命令
+	var wg sync.WaitGroup
+	successCh := make(chan string, len(envs))
+	failCh := make(chan string, len(envs))
 
-	// 为每个环境执行命令
 	for _, env := range envs {
-		// 构建 ck8sUserconf 命令参数
-		args := []string{
-			dynamicBaseSAName,                       // <dynamic-base-sa-name> 如 abc_wintervale_us-test
-			env,                                     // <env> (作为 namespace)
-			level,                                   // <level>
-			"-t", cfg.BotToken,                      // -t <bot_token>
-			"-c", strconv.FormatInt(cfg.GroupChatID, 10), // -c <group_chat_id>
-			"--user-id", strconv.FormatInt(numericUserID, 10), // --user-id <numeric_user_id>
-			"--user", username,                      // --user <username>
-			"--kubeconfig", kubeconfig,              // --kubeconfig <path> (必须参数)
-			"--delete-local",                        // 默认 --delete-local 参数
-		}
+		wg.Add(1)
+		go func(env string) {
+			defer wg.Done()
 
-		// 生成脱敏参数日志
-		redacted := redactedArgs(args)
+			// 构建 ck8sUserconf 命令参数
+			args := []string{
+				dynamicBaseSAName,                       // <dynamic-base-sa-name> 如 abc_wintervale_us-test
+				env,                                     // <env> (作为 namespace)
+				level,                                   // <level>
+				"-t", cfg.BotToken,                      // -t <bot_token>
+				"-c", strconv.FormatInt(cfg.GroupChatID, 10), // -c <group_chat_id>
+				"--user-id", strconv.FormatInt(numericUserID, 10), // --user-id <numeric_user_id>
+				"--user", username,                      // --user <username>
+				"--kubeconfig", kubeconfig,              // --kubeconfig <path> (必须参数)
+				"--delete-local",                        // 默认 --delete-local 参数
+			}
 
-		// 打印日志
-		log.Printf("执行命令 (env: %s, intent: %s): ck8sUserconf %s", env, intent, redacted)
+			// 生成脱敏参数日志
+			redacted := redactedArgs(args)
 
-		// 可选：添加 Token 时长作为环境变量（shell 会读取）
-		cmd := exec.Command("ck8sUserconf", args...)
-		cmd.Env = append(os.Environ(), fmt.Sprintf("TOKEN_DURATION=%sh", cfg.TokenDuration))
+			// 打印日志
+			log.Printf("执行命令 (env: %s, intent: %s): ck8sUserconf %s", env, intent, redacted)
 
-		// 执行命令
-		err := cmd.Run()
-		if err != nil {
-			log.Printf("执行 ck8sUserconf 失败 (env: %s): %v", env, err)
-			failures = append(failures, env)
-		} else {
-			successes = append(successes, env)
-		}
+			// 添加 Token 时长作为环境变量
+			cmd := exec.Command("ck8sUserconf", args...)
+			cmd.Env = append(os.Environ(), fmt.Sprintf("TOKEN_DURATION=%sh", cfg.TokenDuration))
+
+			// 执行命令并捕获输出
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				log.Printf("执行 ck8sUserconf 失败 (env: %s): %v\n输出: %s", env, err, string(output))
+				failCh <- env
+			} else {
+				log.Printf("执行 ck8sUserconf 成功 (env: %s)\n输出: %s", env, string(output))
+				successCh <- env
+			}
+		}(env)
+	}
+
+	// 等待所有 goroutine 完成并关闭 channels
+	go func() {
+		wg.Wait()
+		close(successCh)
+		close(failCh)
+	}()
+
+	// 等待完成
+	wg.Wait()
+
+	// 收集结果
+	var successes, failures []string
+	for s := range successCh {
+		successes = append(successes, s)
+	}
+	for f := range failCh {
+		failures = append(failures, f)
 	}
 
 	// 汇总通知
@@ -371,7 +398,10 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 // sendMessage 发送简单消息
 func sendMessage(chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
-	bot.Send(msg)
+	_, err := bot.Send(msg)
+	if err != nil {
+		log.Printf("发送消息失败: %v", err)
+	}
 }
 
 // sendNotification 发送通知消息（群内 @username）
