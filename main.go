@@ -293,6 +293,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 
 // executeIntent 执行意图：触发 ck8sUserconf shell 命令，支持多个环境，并必须传递 kubeconfig 路径
 // 使用 goroutine 防止单个命令挂起阻塞 Bot，并捕获输出日志
+// 字符串拼接统一使用英文连字符 -
 func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	// 根据用户名获取数字用户 ID
 	numericUserID := getUserID(username)
@@ -301,8 +302,8 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 		return
 	}
 
-	// 动态生成 base_sa_name
-	dynamicBaseSAName := fmt.Sprintf("%s_%s_%s", username, cfg.BaseSAName, intent)
+	// 动态生成 base_sa_name，使用英文连字符 -
+	dynamicBaseSAName := fmt.Sprintf("%s-%s-%s", username, cfg.BaseSAName, intent)
 
 	// 获取环境列表
 	envs, ok := cfg.IntentToEnvs[intent]
@@ -330,7 +331,7 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 
 			// 构建 ck8sUserconf 命令参数
 			args := []string{
-				dynamicBaseSAName,                       // <dynamic-base-sa-name> 如 abc_wintervale_us-test
+				dynamicBaseSAName,                       // <dynamic-base-sa-name> 如 abc5-eks-us-prod
 				env,                                     // <env> (作为 namespace)
 				level,                                   // <level>
 				"-t", cfg.BotToken,                      // -t <bot_token>
@@ -369,9 +370,6 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 		close(successCh)
 		close(failCh)
 	}()
-
-	// 等待完成
-	wg.Wait()
 
 	// 收集结果
 	var successes, failures []string
