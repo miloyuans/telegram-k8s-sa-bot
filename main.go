@@ -291,6 +291,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 }
 
 // executeIntent 执行意图：触发 ck8sUserconf shell 命令，支持多个环境，并必须传递 kubeconfig 路径
+// 动态生成 base_sa_name = username + "_" + cfg.BaseSAName + "_" + intent
 func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	// 根据用户名获取数字用户 ID
 	numericUserID := getUserID(username)
@@ -298,6 +299,9 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 		sendNotification(chatID, username, "用户 ID 配置错误，无法执行")
 		return
 	}
+
+	// 动态生成 base_sa_name
+	dynamicBaseSAName := fmt.Sprintf("%s_%s_%s", username, cfg.BaseSAName, intent)
 
 	// 获取环境列表
 	envs, ok := cfg.IntentToEnvs[intent]
@@ -320,7 +324,7 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	for _, env := range envs {
 		// 构建 ck8sUserconf 命令参数
 		args := []string{
-			cfg.BaseSAName,                          // <base-sa-name>
+			dynamicBaseSAName,                       // <dynamic-base-sa-name> 如 abc_wintervale_us-test
 			env,                                     // <env> (作为 namespace)
 			level,                                   // <level>
 			"-t", cfg.BotToken,                      // -t <bot_token>
