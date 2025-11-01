@@ -2,7 +2,6 @@
 package main
 
 import (
-	"context" // 保留以防未来使用，但当前未用
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,7 +9,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"time" // 保留以防未来使用，但当前未用
 
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -197,20 +195,21 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	// 解析回调数据
 	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 3 {
-		bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
-			CallbackQueryID: callback.ID,
-			Text:            "无效操作",
-		})
+		conf := tgbotapi.NewCallback(callback.ID, "无效操作")
+		bot.Request(conf)
 		return
 	}
 
 	action, uidStr, intent := parts[0], parts[1], parts[2]
-	uid, _ := strconv.Atoi(uidStr)
-	if int64(uid) != callback.From.ID {
-		bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
-			CallbackQueryID: callback.ID,
-			Text:            "无权限",
-		})
+	uid, err := strconv.ParseInt(uidStr, 10, 64)
+	if err != nil {
+		conf := tgbotapi.NewCallback(callback.ID, "无效操作")
+		bot.Request(conf)
+		return
+	}
+	if uid != callback.From.ID {
+		conf := tgbotapi.NewCallback(callback.ID, "无权限")
+		bot.Request(conf)
 		return
 	}
 
@@ -223,10 +222,8 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		}
 	}
 	if !isConfirm {
-		bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
-			CallbackQueryID: callback.ID,
-			Text:            "无权确认",
-		})
+		conf := tgbotapi.NewCallback(callback.ID, "无权确认")
+		bot.Request(conf)
 		return
 	}
 
@@ -242,10 +239,8 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	}
 
 	// 响应回调
-	bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
-		CallbackQueryID: callback.ID,
-		Text:            "操作完成",
-	})
+	conf := tgbotapi.NewCallback(callback.ID, "操作完成")
+	bot.Request(conf)
 }
 
 // executeIntent 执行意图：触发 ck8sUserconf shell 命令
@@ -277,7 +272,7 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 
 	// 可选：添加 Token 时长作为环境变量（shell 会读取）
 	cmd := exec.Command("ck8sUserconf", args...)
-	cmd.Env = append(os.Environ(), fmt.Sprintf("TOKEN_DURATION=%s", cfg.TokenDuration))
+	cmd.Env = append(os.Environ(), fmt.Sprintf("TOKEN_DURATION=%sh", cfg.TokenDuration))
 
 	// 执行命令
 	err := cmd.Run()
