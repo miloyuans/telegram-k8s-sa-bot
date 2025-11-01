@@ -311,7 +311,10 @@ func handleMessage(message *tgbotapi.Message) {
 			),
 		)
 		msg.ReplyMarkup = keyboard
-		bot.Send(msg)
+		_, err := bot.Send(msg)
+		if err != nil {
+			log.Printf("发送确认消息失败: %v", err)
+		}
 	} else {
 		// ro/rw直接执行
 		executeIntent(userID, username, intent, level, message.Chat.ID, isGroup)
@@ -326,11 +329,8 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	// 解析回调数据：confirm/reject_userid_intent_level
 	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 4 {
-		callbackConfig := tgbotapi.AnswerCallbackQueryConfig{
-			CallbackQueryID: callback.ID,
-			Text:            "无效回调",
-		}
-		_, err := bot.AnswerCallbackQuery(callbackConfig)
+		cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID, "无效回调", false, "", 0)
+		_, err := bot.AnswerCallbackQuery(cfg)
 		if err != nil {
 			log.Printf("AnswerCallbackQuery error: %v", err)
 		}
@@ -341,11 +341,8 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	targetUserID, _ := strconv.Atoi(targetUserIDStr)
 	if int64(targetUserID) != userID {
 		// 非目标用户
-		callbackConfig := tgbotapi.AnswerCallbackQueryConfig{
-			CallbackQueryID: callback.ID,
-			Text:            "无权限",
-		}
-		_, err := bot.AnswerCallbackQuery(callbackConfig)
+		cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID, "无权限", false, "", 0)
+		_, err := bot.AnswerCallbackQuery(cfg)
 		if err != nil {
 			log.Printf("AnswerCallbackQuery error: %v", err)
 		}
@@ -361,11 +358,8 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		}
 	}
 	if !isConfirmUser {
-		callbackConfig := tgbotapi.AnswerCallbackQueryConfig{
-			CallbackQueryID: callback.ID,
-			Text:            "您无权确认",
-		}
-		_, err := bot.AnswerCallbackQuery(callbackConfig)
+		cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID, "您无权确认", false, "", 0)
+		_, err := bot.AnswerCallbackQuery(cfg)
 		if err != nil {
 			log.Printf("AnswerCallbackQuery error: %v", err)
 		}
@@ -373,15 +367,13 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	}
 
 	// 回答回调并删除消息
-	callbackConfig := tgbotapi.AnswerCallbackQueryConfig{
-		CallbackQueryID: callback.ID,
-	}
-	_, err := bot.AnswerCallbackQuery(callbackConfig)
+	cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID, "", false, "", 0)
+	_, err := bot.AnswerCallbackQuery(cfg)
 	if err != nil {
 		log.Printf("AnswerCallbackQuery error: %v", err)
 	}
 	deleteMsg := tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID)
-	_, delErr := bot.Request(deleteMsg)
+	_, delErr := bot.Send(deleteMsg)
 	if delErr != nil {
 		log.Printf("DeleteMessage error: %v", delErr)
 	}
@@ -399,11 +391,8 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		log.Printf("Send message error: %v", sendErr)
 	}
 
-	callbackConfig = tgbotapi.AnswerCallbackQueryConfig{
-		CallbackQueryID: callback.ID,
-		Text:            feedback,
-	}
-	_, err = bot.AnswerCallbackQuery(callbackConfig)
+	cfg = tgbotapi.NewAnswerCallbackQuery(callback.ID, feedback, false, "", 0)
+	_, err = bot.AnswerCallbackQuery(cfg)
 	if err != nil {
 		log.Printf("AnswerCallbackQuery error: %v", err)
 	}
@@ -512,14 +501,23 @@ func executeIntent(userID int64, username string, intent string, level string, c
 		defer os.Remove(kubeFile) // 延迟删除文件
 
 		// 发送到私聊
-		privateChatConfig := tgbotapi.ChatInfoConfig{ChatID: userID}
+		privateChatConfig := tgbotapi.ChatInfoConfig{
+			ChatConfig: tgbotapi.ChatConfig{
+				ChatID: userID,
+			},
+		}
 		privateChat, err := bot.GetChat(privateChatConfig)
 		if err != nil {
 			log.Printf("获取私聊失败 (env: %s): %v", env, err)
 			errors = append(errors, fmt.Sprintf("%s环境私信发送失败", env))
 			continue
 		}
-		fileBytes, _ := os.ReadFile(kubeFile)
+		fileBytes, err := os.ReadFile(kubeFile)
+		if err != nil {
+			log.Printf("读取Kubeconfig文件失败 (env: %s): %v", env, err)
+			errors = append(errors, fmt.Sprintf("%s环境文件读取失败", env))
+			continue
+		}
 		file := tgbotapi.FileBytes{
 			Name:  kubeFile,
 			Bytes: fileBytes,
@@ -620,14 +618,17 @@ users:
 // sendMessage 函数：发送简单消息
 func sendMessage(chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
-	bot.Send(msg)
+	_, err := bot.Send(msg)
+	if err != nil {
+		log.Printf("发送消息失败: %v", err)
+	}
 }
 
 // sendNotification 函数：发送通知消息（群聊反馈）
 func sendNotification(chatID int64, username, status string) {
 	msgText := fmt.Sprintf("SA部署@%s: %s", username, status)
 	if strings.Contains(status, "过期") || strings.Contains(status, "Expires") {
-		msgText += " Token将在15小时后过期！！！"
+		msgText += fmt.Sprintf(" Token将在%s小时后过期！！！", cfg.TokenDuration)
 	}
 	sendMessage(chatID, msgText)
 }
