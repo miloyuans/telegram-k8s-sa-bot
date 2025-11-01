@@ -32,7 +32,7 @@ type Config struct {
 // var 声明全局变量
 var cfg Config
 var bot *tgbotapi.BotAPI
-var msgToDelete sync.Map // 存储待删除消息ID，key: string (userID_intent_level), value: []int64
+var msgToDelete sync.Map // 存储待删除消息ID，key: string (userID_intent_level), value: []int
 
 // main 函数：初始化并启动 Bot
 func main() {
@@ -163,20 +163,20 @@ func redactedArgs(args []string) string {
 }
 
 // addMsgToDelete 添加消息ID到待删除列表
-func addMsgToDelete(key string, msgID int64) {
+func addMsgToDelete(key string, msgID int) {
 	if existing, ok := msgToDelete.Load(key); ok {
-		ids := existing.([]int64)
+		ids := existing.([]int)
 		ids = append(ids, msgID)
 		msgToDelete.Store(key, ids)
 	} else {
-		msgToDelete.Store(key, []int64{msgID})
+		msgToDelete.Store(key, []int{msgID})
 	}
 }
 
 // deleteMsgs 删除指定key下的所有消息并清理
 func deleteMsgs(key string, chatID int64) {
 	if ids, ok := msgToDelete.Load(key); ok {
-		for _, id := range ids.([]int64) {
+		for _, id := range ids.([]int) {
 			_, err := bot.Request(tgbotapi.NewDeleteMessage(chatID, id))
 			if err != nil {
 				log.Printf("删除消息失败 (ID: %d): %v", id, err)
@@ -325,7 +325,11 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 
 	// 根据动作执行
 	if action == "confirm" {
-		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "正在触发部署..."))
+		deployMsg := tgbotapi.NewMessage(callback.Message.Chat.ID, "正在触发部署...")
+		sentDeploy, err := bot.Send(deployMsg)
+		if err == nil {
+			addMsgToDelete(key, sentDeploy.MessageID)
+		}
 		executeIntentWithCleanup(callback.From.ID, callback.From.UserName, intent, "all", callback.Message.Chat.ID, key)
 	} else {
 		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "已取消"))
@@ -337,7 +341,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	bot.Request(conf)
 }
 
-// executeIntent 执行意图：触发 ck8sUserconf shell 命令，支持多个环境，并必须传递 kubeconfig 路径
+// executeIntentWithCleanup 执行意图：触发 ck8sUserconf shell 命令，支持多个环境，并必须传递 kubeconfig 路径
 // 使用 goroutine 防止单个命令挂起阻塞 Bot，并捕获输出日志
 // 字符串拼接统一使用英文连字符 -
 // 在拼接 dynamicBaseSAName 时，将用户名中的 _ 转换为 -
@@ -418,7 +422,7 @@ func executeIntentWithCleanup(userID int64, username, intent, level string, chat
 		}(env)
 	}
 
-	// 等待所有 goroutine 完成并关闭 channels
+	// 等待所有 goroutine 完成
 	wg.Wait()
 	close(successCh)
 	close(failCh)
