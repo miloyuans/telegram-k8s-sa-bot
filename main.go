@@ -329,7 +329,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	// 解析回调数据：confirm/reject_userid_intent_level
 	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 4 {
-		cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID, "无效回调", false, "", 0)
+		cfg := tgbotapi.NewCallback(callback.ID, "无效回调")
 		_, err := bot.AnswerCallbackQuery(cfg)
 		if err != nil {
 			log.Printf("AnswerCallbackQuery error: %v", err)
@@ -341,7 +341,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	targetUserID, _ := strconv.Atoi(targetUserIDStr)
 	if int64(targetUserID) != userID {
 		// 非目标用户
-		cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID, "无权限", false, "", 0)
+		cfg := tgbotapi.NewCallback(callback.ID, "无权限")
 		_, err := bot.AnswerCallbackQuery(cfg)
 		if err != nil {
 			log.Printf("AnswerCallbackQuery error: %v", err)
@@ -358,7 +358,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		}
 	}
 	if !isConfirmUser {
-		cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID, "您无权确认", false, "", 0)
+		cfg := tgbotapi.NewCallback(callback.ID, "您无权确认")
 		_, err := bot.AnswerCallbackQuery(cfg)
 		if err != nil {
 			log.Printf("AnswerCallbackQuery error: %v", err)
@@ -367,7 +367,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	}
 
 	// 回答回调并删除消息
-	cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID, "", false, "", 0)
+	cfg := tgbotapi.NewCallback(callback.ID, "")
 	_, err := bot.AnswerCallbackQuery(cfg)
 	if err != nil {
 		log.Printf("AnswerCallbackQuery error: %v", err)
@@ -391,7 +391,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		log.Printf("Send message error: %v", sendErr)
 	}
 
-	cfg = tgbotapi.NewAnswerCallbackQuery(callback.ID, feedback, false, "", 0)
+	cfg = tgbotapi.NewCallback(callback.ID, feedback)
 	_, err = bot.AnswerCallbackQuery(cfg)
 	if err != nil {
 		log.Printf("AnswerCallbackQuery error: %v", err)
