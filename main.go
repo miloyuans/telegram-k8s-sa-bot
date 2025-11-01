@@ -182,11 +182,12 @@ func handleMessage(m *tgbotapi.Message) {
 	}
 }
 
-func handleCallback(c *tgbotapi.CallbackQuery) {
-	parts := strings.Split(c.Data, "_")
+// handleCallback 函数
+func handleCallback(callback *tgbotapi.CallbackQuery) {
+	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 3 {
 		bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
-			CallbackQueryID: c.ID,
+			CallbackQueryID: callback.ID,
 			Text:            "无效操作",
 		})
 		return
@@ -194,39 +195,44 @@ func handleCallback(c *tgbotapi.CallbackQuery) {
 
 	action, uidStr, intent := parts[0], parts[1], parts[2]
 	uid, _ := strconv.Atoi(uidStr)
-	if int64(uid) != c.From.ID {
+	if int64(uid) != callback.From.ID {
 		bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
-			CallbackQueryID: c.ID,
+			CallbackQueryID: callback.ID,
 			Text:            "无权限",
 		})
 		return
 	}
 
+	// 确认权限
 	isConfirm := false
 	for _, u := range cfg.ConfirmUsers {
-		if u == c.From.UserName { isConfirm = true; break }
+		if u == callback.From.UserName {
+			isConfirm = true
+			break
+		}
 	}
 	if !isConfirm {
 		bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
-			CallbackQueryID: c.ID,
+			CallbackQueryID: callback.ID,
 			Text:            "无权确认",
 		})
 		return
 	}
 
-	// 删除原消息
-	bot.Request(tgbotapi.NewDeleteMessage(c.Message.Chat.ID, c.Message.MessageID))
+	// 删除消息
+	bot.Request(tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID))
 
+	// 执行
 	if action == "confirm" {
-		bot.Send(tgbotapi.NewMessage(c.Message.Chat.ID, "执行中..."))
-		executeIntent(c.From.ID, c.From.UserName, intent, "all", c.Message.Chat.ID, true)
+		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "正在部署..."))
+		executeIntent(callback.From.ID, callback.From.UserName, intent, "all", callback.Message.Chat.ID, true)
 	} else {
-		bot.Send(tgbotapi.NewMessage(c.Message.Chat.ID, "已取消"))
+		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "已取消"))
 	}
 
 	// 最终弹窗
 	bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
-		CallbackQueryID: c.ID,
+		CallbackQueryID: callback.ID,
 		Text:            "操作完成",
 	})
 }
