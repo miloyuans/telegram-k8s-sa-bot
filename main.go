@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"        // 用于上下文管理
 	"encoding/base64" // 用于Base64编码/解码
 	"encoding/json"   // 用于JSON序列化/反序列化
 	"fmt"             // 用于格式化输出
@@ -326,7 +327,8 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	// 解析回调数据：confirm/reject_userid_intent_level
 	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 4 {
-		bot.AnswerCallbackQuery(tgbotapi.NewCallback(callback.ID, "无效回调"))
+		callbackConfig := tgbotapi.NewCallback(callback.ID, "无效回调")
+		bot.AnswerCallbackQuery(callbackConfig)
 		return
 	}
 	action, targetUserIDStr, intent, level := parts[0], parts[1], parts[2], parts[3]
@@ -334,7 +336,8 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	targetUserID, _ := strconv.Atoi(targetUserIDStr)
 	if int64(targetUserID) != userID {
 		// 非目标用户
-		bot.AnswerCallbackQuery(tgbotapi.NewCallback(callback.ID, "无权限"))
+		callbackConfig := tgbotapi.NewCallback(callback.ID, "无权限")
+		bot.AnswerCallbackQuery(callbackConfig)
 		return
 	}
 
@@ -347,13 +350,16 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		}
 	}
 	if !isConfirmUser {
-		bot.AnswerCallbackQuery(tgbotapi.NewCallback(callback.ID, "您无权确认"))
+		callbackConfig := tgbotapi.NewCallback(callback.ID, "您无权确认")
+		bot.AnswerCallbackQuery(callbackConfig)
 		return
 	}
 
 	// 回答回调并删除消息
-	bot.AnswerCallbackQuery(tgbotapi.NewCallback(callback.ID, ""))
-	bot.Request(tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID))
+	callbackConfig := tgbotapi.NewCallback(callback.ID, "")
+	bot.AnswerCallbackQuery(callbackConfig)
+	deleteMsg := tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID)
+	bot.Request(deleteMsg)
 
 	// 反馈消息
 	var feedback string
@@ -365,7 +371,8 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	}
 	bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, feedback))
 
-	bot.AnswerCallbackQuery(tgbotapi.NewCallback(callback.ID, feedback))
+	callbackConfig = tgbotapi.NewCallback(callback.ID, feedback)
+	bot.AnswerCallbackQuery(callbackConfig)
 }
 
 // executeIntent 函数：执行意图逻辑（为每个环境创建SA、Role、RoleBinding、生成Token和Kubeconfig）
@@ -383,11 +390,13 @@ func executeIntent(userID int64, username string, intent string, level string, c
 		return
 	}
 
+	ctx := context.Background()
+
 	// 确保命名空间存在
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: cfg.Namespace},
 	}
-	_, err = k8sClient.Clientset.CoreV1().Namespaces().Create(context.TODO(), ns, metav1.CreateOptions{})
+	_, err = k8sClient.Clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 	if err != nil && !strings.Contains(err.Error(), "already exists") {
 		log.Printf("警告: 创建命名空间%s失败: %v", cfg.Namespace, err)
 	}
@@ -445,7 +454,7 @@ func executeIntent(userID int64, username string, intent string, level string, c
 				ExpirationSeconds: &expSeconds,
 			},
 		}
-		tokenResp, err := k8sClient.Clientset.CoreV1().ServiceAccounts(cfg.Namespace).CreateToken(context.TODO(), saName, tokenRequest, metav1.CreateOptions{})
+		tokenResp, err := k8sClient.Clientset.CoreV1().ServiceAccounts(cfg.Namespace).CreateToken(ctx, saName, tokenRequest, metav1.CreateOptions{})
 		if err != nil {
 			log.Printf("生成Token失败 (env: %s): %v", env, err)
 			errors = append(errors, fmt.Sprintf("%s环境Token生成失败", env))
@@ -469,7 +478,7 @@ func executeIntent(userID int64, username string, intent string, level string, c
 		defer os.Remove(kubeFile) // 延迟删除文件
 
 		// 发送到私聊
-		privateChatConfig := tgbotapi.GetChatConfig{ChatID: userID}
+		privateChatConfig := tgbotapi.ChatConfig{ID: userID}
 		privateChat, err := bot.GetChat(privateChatConfig)
 		if err != nil {
 			log.Printf("获取私聊失败 (env: %s): %v", env, err)
@@ -529,7 +538,8 @@ func createResource(client *K8sClient, kind string, obj map[string]interface{}) 
 
 	u := &unstructured.Unstructured{Object: obj}
 	u.SetGroupVersionKind(gvr.GroupVersion().WithKind(kind))
-	_, err := client.DynamicClient.Resource(gvr).Namespace(cfg.Namespace).Create(context.TODO(), u, metav1.CreateOptions{})
+	ctx := context.Background()
+	_, err := client.DynamicClient.Resource(gvr).Namespace(cfg.Namespace).Create(ctx, u, metav1.CreateOptions{})
 	if err != nil && !strings.Contains(err.Error(), "already exists") {
 		log.Printf("创建%s失败: %v", kind, err)
 	}
@@ -543,7 +553,11 @@ func parseRules(ruleStr string) []interface{} {
 		log.Printf("解析规则YAML失败: %v", err)
 		return nil
 	}
-	return rules
+	var ruleList []interface{}
+	for _, r := range rules {
+		ruleList = append(ruleList, r)
+	}
+	return ruleList
 }
 
 // generateKubeConfig 函数：生成Kubeconfig YAML字符串
