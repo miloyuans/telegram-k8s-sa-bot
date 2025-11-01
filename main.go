@@ -15,16 +15,16 @@ import (
 
 // Config 定义配置文件结构
 type Config struct {
-	BotToken          string            `json:"bot_token"`          // Telegram Bot Token
-	Whitelist         []string          `json:"whitelist_users"`    // 白名单用户名列表（用于群内权限检查）
-	ConfirmUsers      []string          `json:"confirm_users"`      // 确认用户列表（用于 all 权限的二次确认）
-	PresetMessage     string            `json:"preset_message"`     // 预设拒绝消息
-	BaseSAName        string            `json:"base_sa_name"`       // SA 基础名称（用于生成 SA 如 base-ro）
-	GroupChatID       int64             `json:"group_chat_id"`      // 群聊 ID（负数，用于 shell 命令通知）
-	TokenDuration     string            `json:"token_duration_hours"` // Token 有效时长（小时，默认 15）
-	IntentKeywords    map[string][]string `json:"intent_keywords"`   // 意图关键字映射，如 {"us-prod": ["美国生产"]}
-	IntentToNamespace map[string]string `json:"intent_to_namespace"` // 意图到命名空间映射，如 {"us-prod": "international"}
-	UserMap           map[string]int64  `json:"user_map"`           // 用户名到数字用户 ID 映射，如 {"abc": 12345}
+	BotToken          string                  `json:"bot_token"`          // Telegram Bot Token
+	Whitelist         []string                `json:"whitelist_users"`    // 白名单用户名列表（用于群内权限检查）
+	ConfirmUsers      []string                `json:"confirm_users"`      // 确认用户列表（用于 all 权限的二次确认）
+	PresetMessage     string                  `json:"preset_message"`     // 预设拒绝消息
+	BaseSAName        string                  `json:"base_sa_name"`       // SA 基础名称（用于生成 SA 如 base-ro）
+	GroupChatID       int64                   `json:"group_chat_id"`      // 群聊 ID（负数，用于 shell 命令通知）
+	TokenDuration     string                  `json:"token_duration_hours"` // Token 有效时长（小时，默认 15）
+	IntentKeywords    map[string][]string     `json:"intent_keywords"`    // 意图关键字映射，如 {"us-prod": ["美国生产"]}
+	IntentToNamespace map[string][]string     `json:"intent_to_namespace"` // 意图到命名空间映射，支持多个，如 {"us-prod": ["international"]}
+	UserMap           map[string]int64        `json:"user_map"`           // 用户名到数字用户 ID 映射，如 {"abc": 12345}
 }
 
 // var 声明全局变量
@@ -79,16 +79,32 @@ func loadConfig() {
 	// 默认意图关键字
 	if cfg.IntentKeywords == nil {
 		cfg.IntentKeywords = map[string][]string{
-			"us-prod": {"美国生产"},
-			"test":    {"测试"},
+			"us-prod":    {"美国生产"},
+			"sg-prod":    {"新加坡生产"},
+			"br-prod":    {"巴西生产"},
+			"sp-prod":    {"圣保罗生产"},
+			"test":       {"测试"},
+			"global-test": {"全球测试"},
+			"global-hk-test": {"全球香港测试"},
+			"pre-release": {"预发布"},
+			"us-test":    {"美国测试"},
+			"global-us-test": {"全球美国测试"},
 		}
 	}
 
-	// 默认意图到命名空间映射
+	// 默认意图到命名空间映射（支持多个）
 	if cfg.IntentToNamespace == nil {
-		cfg.IntentToNamespace = map[string]string{
-			"us-prod": "international",
-			"test":    "pre",
+		cfg.IntentToNamespace = map[string][]string{
+			"us-prod":    {"international"},
+			"sg-prod":    {"international"},
+			"br-prod":    {"international"},
+			"sp-prod":    {"international"},
+			"test":       {"international", "global", "pre"},
+			"global-test": {"international", "global", "pre"},
+			"global-hk-test": {"international", "global", "pre"},
+			"pre-release": {"international", "global", "pre"},
+			"us-test":    {"international", "global"},
+			"global-us-test": {"international", "global"},
 		}
 	}
 
@@ -243,7 +259,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	bot.Request(conf)
 }
 
-// executeIntent 执行意图：触发 ck8sUserconf shell 命令
+// executeIntent 执行意图：触发 ck8sUserconf shell 命令，支持多个命名空间
 func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	// 根据用户名获取数字用户 ID
 	numericUserID := getUserID(username)
@@ -252,38 +268,54 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 		return
 	}
 
-	// 获取命名空间
-	namespace, ok := cfg.IntentToNamespace[intent]
-	if !ok {
+	// 获取命名空间列表
+	namespaces, ok := cfg.IntentToNamespace[intent]
+	if !ok || len(namespaces) == 0 {
 		sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的命名空间配置缺失", intent))
 		return
 	}
 
-	// 构建 ck8sUserconf 命令参数
-	args := []string{
-		cfg.BaseSAName,                          // <base-sa-name>
-		namespace,                               // <namespace>
-		level,                                   // <level>
-		"-t", cfg.BotToken,                      // -t <bot_token>
-		"-c", strconv.FormatInt(cfg.GroupChatID, 10), // -c <group_chat_id>
-		"--user-id", strconv.FormatInt(numericUserID, 10), // --user-id <numeric_user_id>
-		"--user", username,                      // --user <username>
+	// 记录成功和失败的命名空间
+	var successes, failures []string
+
+	// 为每个命名空间执行命令
+	for _, namespace := range namespaces {
+		// 构建 ck8sUserconf 命令参数
+		args := []string{
+			cfg.BaseSAName,                          // <base-sa-name>
+			namespace,                               // <namespace>
+			level,                                   // <level>
+			"-t", cfg.BotToken,                      // -t <bot_token>
+			"-c", strconv.FormatInt(cfg.GroupChatID, 10), // -c <group_chat_id>
+			"--user-id", strconv.FormatInt(numericUserID, 10), // --user-id <numeric_user_id>
+			"--user", username,                      // --user <username>
+		}
+
+		// 可选：添加 Token 时长作为环境变量（shell 会读取）
+		cmd := exec.Command("ck8sUserconf", args...)
+		cmd.Env = append(os.Environ(), fmt.Sprintf("TOKEN_DURATION=%sh", cfg.TokenDuration))
+
+		// 执行命令
+		err := cmd.Run()
+		if err != nil {
+			log.Printf("执行 ck8sUserconf 失败 (namespace: %s): %v", namespace, err)
+			failures = append(failures, namespace)
+		} else {
+			successes = append(successes, namespace)
+		}
 	}
 
-	// 可选：添加 Token 时长作为环境变量（shell 会读取）
-	cmd := exec.Command("ck8sUserconf", args...)
-	cmd.Env = append(os.Environ(), fmt.Sprintf("TOKEN_DURATION=%sh", cfg.TokenDuration))
-
-	// 执行命令
-	err := cmd.Run()
-	if err != nil {
-		log.Printf("执行 ck8sUserconf 失败: %v", err)
-		sendNotification(chatID, username, fmt.Sprintf("执行失败: %v", err))
-		return
+	// 汇总通知
+	if len(successes) > 0 {
+		sendNotification(chatID, username, fmt.Sprintf("成功: %s", strings.Join(successes, ",")))
+	}
+	if len(failures) > 0 {
+		sendNotification(chatID, username, fmt.Sprintf("失败: %s", strings.Join(failures, ",")))
 	}
 
-	// 成功通知
-	sendNotification(chatID, username, fmt.Sprintf("已触发 %s %s 权限部署（Token 时长: %s 小时）", intent, level, cfg.TokenDuration))
+	if len(successes) > 0 {
+		sendNotification(chatID, username, fmt.Sprintf("已触发 %s %s 权限部署（Token 时长: %s 小时）", intent, level, cfg.TokenDuration))
+	}
 }
 
 // sendMessage 发送简单消息
