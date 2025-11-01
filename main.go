@@ -319,7 +319,6 @@ func handleMessage(message *tgbotapi.Message) {
 }
 
 // handleCallback 函数：处理回调查询（弹窗确认）
-// handleCallback 函数：处理回调查询（弹窗确认）
 func handleCallback(callback *tgbotapi.CallbackQuery) {
 	userID := callback.From.ID
 	username := callback.From.UserName
@@ -327,11 +326,14 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	// 解析回调数据：confirm/reject_userid_intent_level
 	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 4 {
-		callbackConfig := tgbotapi.CallbackConfig{
+		callbackConfig := tgbotapi.AnswerCallbackQueryConfig{
 			CallbackQueryID: callback.ID,
 			Text:            "无效回调",
 		}
-		bot.AnswerCallbackQuery(callbackConfig)
+		_, err := bot.AnswerCallbackQuery(callbackConfig)
+		if err != nil {
+			log.Printf("AnswerCallbackQuery error: %v", err)
+		}
 		return
 	}
 	action, targetUserIDStr, intent, level := parts[0], parts[1], parts[2], parts[3]
@@ -339,11 +341,14 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	targetUserID, _ := strconv.Atoi(targetUserIDStr)
 	if int64(targetUserID) != userID {
 		// 非目标用户
-		callbackConfig := tgbotapi.CallbackConfig{
+		callbackConfig := tgbotapi.AnswerCallbackQueryConfig{
 			CallbackQueryID: callback.ID,
 			Text:            "无权限",
 		}
-		bot.AnswerCallbackQuery(callbackConfig)
+		_, err := bot.AnswerCallbackQuery(callbackConfig)
+		if err != nil {
+			log.Printf("AnswerCallbackQuery error: %v", err)
+		}
 		return
 	}
 
@@ -356,21 +361,30 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		}
 	}
 	if !isConfirmUser {
-		callbackConfig := tgbotapi.CallbackConfig{
+		callbackConfig := tgbotapi.AnswerCallbackQueryConfig{
 			CallbackQueryID: callback.ID,
 			Text:            "您无权确认",
 		}
-		bot.AnswerCallbackQuery(callbackConfig)
+		_, err := bot.AnswerCallbackQuery(callbackConfig)
+		if err != nil {
+			log.Printf("AnswerCallbackQuery error: %v", err)
+		}
 		return
 	}
 
 	// 回答回调并删除消息
-	callbackConfig := tgbotapi.CallbackConfig{
+	callbackConfig := tgbotapi.AnswerCallbackQueryConfig{
 		CallbackQueryID: callback.ID,
 	}
-	bot.AnswerCallbackQuery(callbackConfig)
+	_, err := bot.AnswerCallbackQuery(callbackConfig)
+	if err != nil {
+		log.Printf("AnswerCallbackQuery error: %v", err)
+	}
 	deleteMsg := tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID)
-	bot.Request(deleteMsg)
+	_, delErr := bot.Request(deleteMsg)
+	if delErr != nil {
+		log.Printf("DeleteMessage error: %v", delErr)
+	}
 
 	// 反馈消息
 	var feedback string
@@ -380,13 +394,19 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	} else {
 		feedback = "已拒绝。无操作执行。"
 	}
-	bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, feedback))
+	_, sendErr := bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, feedback))
+	if sendErr != nil {
+		log.Printf("Send message error: %v", sendErr)
+	}
 
-	callbackConfig = tgbotapi.CallbackConfig{
+	callbackConfig = tgbotapi.AnswerCallbackQueryConfig{
 		CallbackQueryID: callback.ID,
 		Text:            feedback,
 	}
-	bot.AnswerCallbackQuery(callbackConfig)
+	_, err = bot.AnswerCallbackQuery(callbackConfig)
+	if err != nil {
+		log.Printf("AnswerCallbackQuery error: %v", err)
+	}
 }
 
 // executeIntent 函数：执行意图逻辑（为每个环境创建SA、Role、RoleBinding、生成Token和Kubeconfig）
