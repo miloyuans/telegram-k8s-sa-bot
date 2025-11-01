@@ -32,6 +32,7 @@ type Config struct {
 // var 声明全局变量
 var cfg Config
 var bot *tgbotapi.BotAPI
+var msgToDelete sync.Map // 存储待删除消息ID，key: string (userID_intent_level), value: []int64
 
 // main 函数：初始化并启动 Bot
 func main() {
@@ -161,6 +162,30 @@ func redactedArgs(args []string) string {
 	return strings.Join(redacted, " ")
 }
 
+// addMsgToDelete 添加消息ID到待删除列表
+func addMsgToDelete(key string, msgID int64) {
+	if existing, ok := msgToDelete.Load(key); ok {
+		ids := existing.([]int64)
+		ids = append(ids, msgID)
+		msgToDelete.Store(key, ids)
+	} else {
+		msgToDelete.Store(key, []int64{msgID})
+	}
+}
+
+// deleteMsgs 删除指定key下的所有消息并清理
+func deleteMsgs(key string, chatID int64) {
+	if ids, ok := msgToDelete.Load(key); ok {
+		for _, id := range ids.([]int64) {
+			_, err := bot.Request(tgbotapi.NewDeleteMessage(chatID, id))
+			if err != nil {
+				log.Printf("删除消息失败 (ID: %d): %v", id, err)
+			}
+		}
+		msgToDelete.Delete(key)
+	}
+}
+
 // handleMessage 处理传入消息
 func handleMessage(m *tgbotapi.Message) {
 	// 获取用户信息
@@ -222,19 +247,36 @@ func handleMessage(m *tgbotapi.Message) {
 		return
 	}
 
+	// 生成key
+	key := fmt.Sprintf("%d_%s_%s", userID, intent, level)
+
+	// 发送“权限申请分析中...”消息
+	analysisMsg := tgbotapi.NewMessage(m.Chat.ID, "权限申请分析中...")
+	sentAnalysis, err := bot.Send(analysisMsg)
+	if err != nil {
+		log.Printf("发送分析消息失败: %v", err)
+		return
+	}
+	addMsgToDelete(key, sentAnalysis.MessageID)
+
 	// 如果是 all 权限，需要弹窗确认
 	if level == "all" {
-		msg := tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("确认 '%s' 的 all 权限？", intent))
-		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		confirmMsg := tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("确认 '%s' 的 all 权限？", intent))
+		confirmMsg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("确认", fmt.Sprintf("confirm_%d_%s_all", userID, intent)),
 				tgbotapi.NewInlineKeyboardButtonData("拒绝", fmt.Sprintf("reject_%d_%s_all", userID, intent)),
 			),
 		)
-		bot.Send(msg)
+		sentConfirm, err := bot.Send(confirmMsg)
+		if err != nil {
+			log.Printf("发送确认消息失败: %v", err)
+			return
+		}
+		addMsgToDelete(key, sentConfirm.MessageID)
 	} else {
 		// 直接执行
-		executeIntent(userID, username, intent, level, m.Chat.ID)
+		executeIntentWithCleanup(userID, username, intent, level, m.Chat.ID, key)
 	}
 }
 
@@ -275,15 +317,19 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// 删除确认消息
+	// 生成key
+	key := fmt.Sprintf("%d_%s_all", callback.From.ID, intent)
+
+	// 删除确认消息（已读状态）
 	bot.Request(tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID))
 
 	// 根据动作执行
 	if action == "confirm" {
 		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "正在触发部署..."))
-		executeIntent(callback.From.ID, callback.From.UserName, intent, "all", callback.Message.Chat.ID)
+		executeIntentWithCleanup(callback.From.ID, callback.From.UserName, intent, "all", callback.Message.Chat.ID, key)
 	} else {
 		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "已取消"))
+		deleteMsgs(key, callback.Message.Chat.ID) // 拒绝时删除相关消息
 	}
 
 	// 响应回调
@@ -295,11 +341,13 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 // 使用 goroutine 防止单个命令挂起阻塞 Bot，并捕获输出日志
 // 字符串拼接统一使用英文连字符 -
 // 在拼接 dynamicBaseSAName 时，将用户名中的 _ 转换为 -
-func executeIntent(userID int64, username, intent, level string, chatID int64) {
+// 执行完成后调用 cleanup 删除消息
+func executeIntentWithCleanup(userID int64, username, intent, level string, chatID int64, key string) {
 	// 根据用户名获取数字用户 ID
 	numericUserID := getUserID(username)
 	if numericUserID == 0 {
 		sendNotification(chatID, username, "用户 ID 配置错误，无法执行")
+		deleteMsgs(key, chatID)
 		return
 	}
 
@@ -313,6 +361,7 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	envs, ok := cfg.IntentToEnvs[intent]
 	if !ok || len(envs) == 0 {
 		sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的环境配置缺失", intent))
+		deleteMsgs(key, chatID)
 		return
 	}
 
@@ -320,6 +369,7 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	kubeconfig, kubeOk := cfg.EnvToKubeConfig[intent]
 	if !kubeOk || kubeconfig == "" {
 		sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的 kubeconfig 配置缺失", intent))
+		deleteMsgs(key, chatID)
 		return
 	}
 
@@ -369,11 +419,9 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	}
 
 	// 等待所有 goroutine 完成并关闭 channels
-	go func() {
-		wg.Wait()
-		close(successCh)
-		close(failCh)
-	}()
+	wg.Wait()
+	close(successCh)
+	close(failCh)
 
 	// 收集结果
 	var successes, failures []string
@@ -395,6 +443,9 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	if len(successes) > 0 {
 		sendNotification(chatID, username, fmt.Sprintf("已触发 %s %s 权限部署（Token 时长: %s 小时）", intent, level, cfg.TokenDuration))
 	}
+
+	// 完成后删除消息
+	deleteMsgs(key, chatID)
 }
 
 // sendMessage 发送简单消息
