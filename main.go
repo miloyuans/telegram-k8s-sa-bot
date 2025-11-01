@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bytes"          // 用于缓冲区操作
 	"context"        // 用于上下文管理
 	"crypto/tls"     // 用于TLS加密
 	"crypto/x509"    // 用于X.509证书处理
@@ -10,7 +9,6 @@ import (
 	"encoding/json"  // 用于JSON序列化/反序列化
 	"encoding/pem"   // 用于PEM格式处理
 	"fmt"            // 用于格式化输出
-	"io"             // 用于I/O操作
 	"io/ioutil"      // 用于文件I/O（已弃用，但为兼容保留；生产中用os.ReadFile等）
 	"log"            // 用于日志记录
 	"os"             // 用于操作系统交互
@@ -30,6 +28,7 @@ import (
 	"k8s.io/client-go/rest"                              // Kubernetes REST配置
 	"k8s.io/client-go/tools/clientcmd"                   // Kubernetes客户端命令工具
 	"k8s.io/client-go/dynamic"                           // Kubernetes动态客户端
+	unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured" // Kubernetes unstructured API
 )
 
 // Config 结构体：存储机器人和操作配置
@@ -153,17 +152,13 @@ func loadConfig() {
 		}
 	}
 
-	// 确保环境到kubeconfig映射存在（默认填充）
+	// 确保环境到kubeconfig映射存在（默认填充） - 修复重复键
 	if cfg.EnvToKubeConfig == nil {
 		cfg.EnvToKubeConfig = map[string]string{
-			"international": "~/.kube/config-us", // 美国生产
-			"international": "~/.kube/config-hb", // 新加坡生产（注意：同一env不同路径？按意图动态选择）
-			// 实际中，按env统一，但用户指定按意图，所以在执行时按env+意图推断
-			// 为简化，假设env是key，但生产env均为"international"，需特殊处理
-			// 调整：使用意图作为key，或在代码中硬编码映射
+			"international": "~/.kube/config-us",
+			"global":        "~/.kube/config-test",
+			"pre":           "~/.kube/config-test",
 		}
-		// 由于env均为"international" for prod，但路径不同，按意图映射路径
-		// 在代码中添加意图到路径的映射
 	}
 }
 
@@ -329,8 +324,9 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// 删除带键盘的消息
-	bot.Request(tgbotapi.NewCallbackWithMessage(callback.ID, "", tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID)))
+	// 回答回调并删除消息
+	bot.AnswerCallbackQuery(tgbotapi.NewCallback(callback.ID, ""))
+	bot.Request(tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID))
 
 	// 反馈消息
 	var feedback string
@@ -358,6 +354,15 @@ func executeIntent(userID int64, username string, intent string, level string, c
 	if err != nil {
 		sendNotification(chatID, username, fmt.Sprintf("初始化K8s客户端失败 (%s): %v", kubeConfigPath, err))
 		return
+	}
+
+	// 确保命名空间存在
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: cfg.Namespace},
+	}
+	_, err = k8sClient.Clientset.CoreV1().Namespaces().Create(context.TODO(), ns, metav1.CreateOptions{})
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		log.Printf("警告: 创建命名空间%s失败: %v", cfg.Namespace, err)
 	}
 
 	var successFiles []string
@@ -406,9 +411,10 @@ func executeIntent(userID int64, username string, intent string, level string, c
 
 		// 生成Token（指定持续时间）
 		duration, _ := time.ParseDuration(fmt.Sprintf("%sh", cfg.TokenDuration))
+		expSeconds := int64(duration.Seconds())
 		tokenRequest := &authv1.TokenRequest{
 			Spec: authv1.TokenRequestSpec{
-				ExpirationSeconds: int64(duration.Seconds()),
+				ExpirationSeconds: &expSeconds,
 			},
 		}
 		tokenResp, err := k8sClient.Clientset.CoreV1().ServiceAccounts(cfg.Namespace).CreateToken(context.TODO(), saName, tokenRequest, metav1.CreateOptions{})
@@ -435,7 +441,7 @@ func executeIntent(userID int64, username string, intent string, level string, c
 		defer os.Remove(kubeFile) // 延迟删除文件
 
 		// 发送到私聊
-		privateChat, err := bot.GetChat(tgbotapi.ChatInfo{ChatID: userID})
+		privateChat, err := bot.GetChat(tgbotapi.Chat{ID: userID})
 		if err != nil {
 			log.Printf("获取私聊失败 (env: %s): %v", env, err)
 			errors = append(errors, fmt.Sprintf("%s环境私信发送失败", env))
