@@ -329,8 +329,10 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	// 解析回调数据：confirm/reject_userid_intent_level
 	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 4 {
-		cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID)
-		cfg.Text = "无效回调"
+		cfg := tgbotapi.AnswerCallbackQueryConfig{
+			CallbackQueryID: callback.ID,
+			Text:            "无效回调",
+		}
 		_, err := bot.AnswerCallbackQuery(cfg)
 		if err != nil {
 			log.Printf("AnswerCallbackQuery error: %v", err)
@@ -342,8 +344,10 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	targetUserID, _ := strconv.Atoi(targetUserIDStr)
 	if int64(targetUserID) != userID {
 		// 非目标用户
-		cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID)
-		cfg.Text = "无权限"
+		cfg := tgbotapi.AnswerCallbackQueryConfig{
+			CallbackQueryID: callback.ID,
+			Text:            "无权限",
+		}
 		_, err := bot.AnswerCallbackQuery(cfg)
 		if err != nil {
 			log.Printf("AnswerCallbackQuery error: %v", err)
@@ -360,8 +364,10 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		}
 	}
 	if !isConfirmUser {
-		cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID)
-		cfg.Text = "您无权确认"
+		cfg := tgbotapi.AnswerCallbackQueryConfig{
+			CallbackQueryID: callback.ID,
+			Text:            "您无权确认",
+		}
 		_, err := bot.AnswerCallbackQuery(cfg)
 		if err != nil {
 			log.Printf("AnswerCallbackQuery error: %v", err)
@@ -370,7 +376,9 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	}
 
 	// 回答回调并删除消息
-	cfg := tgbotapi.NewAnswerCallbackQuery(callback.ID)
+	cfg := tgbotapi.AnswerCallbackQueryConfig{
+		CallbackQueryID: callback.ID,
+	}
 	_, err := bot.AnswerCallbackQuery(cfg)
 	if err != nil {
 		log.Printf("AnswerCallbackQuery error: %v", err)
@@ -394,8 +402,10 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		log.Printf("Send message error: %v", sendErr)
 	}
 
-	cfg = tgbotapi.NewAnswerCallbackQuery(callback.ID)
-	cfg.Text = feedback
+	cfg = tgbotapi.AnswerCallbackQueryConfig{
+		CallbackQueryID: callback.ID,
+		Text:            feedback,
+	}
 	_, err = bot.AnswerCallbackQuery(cfg)
 	if err != nil {
 		log.Printf("AnswerCallbackQuery error: %v", err)
