@@ -2,39 +2,33 @@
 package main
 
 import (
-	"context"        // 用于上下文管理
-	"crypto/tls"     // 用于TLS加密
-	"crypto/x509"    // 用于X.509证书处理
 	"encoding/base64" // 用于Base64编码/解码
-	"encoding/json"  // 用于JSON序列化/反序列化
-	"encoding/pem"   // 用于PEM格式处理
-	"fmt"            // 用于格式化输出
-	"io/ioutil"      // 用于文件I/O（已弃用，但为兼容保留；生产中用os.ReadFile等）
-	"log"            // 用于日志记录
-	"os"             // 用于操作系统交互
-	"os/exec"        // 用于执行外部命令
-	"path/filepath"  // 用于路径处理
-	"strconv"        // 用于字符串到数字转换
-	"strings"        // 用于字符串操作
-	"time"           // 用于时间处理
+	"encoding/json"   // 用于JSON序列化/反序列化
+	"fmt"             // 用于格式化输出
+	"io/ioutil"       // 用于文件I/O（已弃用，但为兼容保留；生产中用os.ReadFile等）
+	"log"             // 用于日志记录
+	"os"              // 用于操作系统交互
+	"path/filepath"   // 用于路径处理
+	"strconv"         // 用于字符串到数字转换
+	"strings"         // 用于字符串操作
+	"time"            // 用于时间处理
 
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5" // Telegram Bot API客户端
 	corev1 "k8s.io/api/core/v1"                          // Kubernetes Core API v1
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"         // Kubernetes元数据API
 	authv1 "k8s.io/api/authentication/v1"                // Kubernetes认证API v1
 	"k8s.io/apimachinery/pkg/runtime/schema"              // Kubernetes schema定义
-	"k8s.io/apimachinery/pkg/util/yaml"                   // Kubernetes YAML工具
 	"k8s.io/client-go/kubernetes"                        // Kubernetes客户端集
 	"k8s.io/client-go/rest"                              // Kubernetes REST配置
 	"k8s.io/client-go/tools/clientcmd"                   // Kubernetes客户端命令工具
 	"k8s.io/client-go/dynamic"                           // Kubernetes动态客户端
 	unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured" // Kubernetes unstructured API
+	"gopkg.in/yaml.v3"                                   // 用于YAML解析
 )
 
 // Config 结构体：存储机器人和操作配置
 type Config struct {
 	BotToken          string                 `json:"bot_token"`            // Telegram Bot Token
-	TriggerKeyword    string                 `json:"trigger_keyword"`      // 触发关键词
 	Whitelist         []string               `json:"whitelist_users"`      // 白名单用户名列表
 	ConfirmUsers      []string               `json:"confirm_users"`        // 确认用户列表（用于all权限弹窗）
 	PresetMessage     string                 `json:"preset_message"`       // 非白名单用户的预设拒绝消息
@@ -47,21 +41,8 @@ type Config struct {
 	EnvToKubeConfig   map[string]string      `json:"env_to_kubeconfig"`    // 环境到kubeconfig路径的映射
 }
 
-// Permissions 映射：定义不同权限级别的RBAC规则（YAML格式字符串）
-var Permissions = map[string]string{
-	"ro": `rules:
-- apiGroups: ["*"]
-  resources: ["*"]
-  verbs: ["get","list","watch"]`, // 只读权限：get/list/watch所有资源
-	"rw": `rules:
-- apiGroups: ["*"]
-  resources: ["*"]
-  verbs: ["get","list","watch","create","update","patch","delete"]`, // 读写权限：包含创建/更新/删除
-	"all": `rules:
-- apiGroups: ["*"]
-  resources: ["*"]
-  verbs: ["*"]`, // 全权限：所有动词所有资源
-}
+// Permissions 映射：定义不同权限级别的RBAC规则（从YAML文件加载）
+var Permissions = map[string]string{}
 
 // 全局变量
 var (
@@ -78,6 +59,9 @@ type K8sClient struct {
 
 // main 函数：程序入口
 func main() {
+	// 加载权限模板
+	loadPermissions()
+
 	// 加载配置
 	loadConfig()
 
@@ -101,6 +85,30 @@ func main() {
 			handleCallback(update.CallbackQuery) // 处理回调查询（弹窗确认）
 		}
 	}
+}
+
+// loadPermissions 函数：从YAML文件加载权限模板
+func loadPermissions() {
+	// 加载 ro.yaml
+	roData, err := ioutil.ReadFile("ro.yaml")
+	if err != nil {
+		log.Fatal("加载 ro.yaml 失败:", err)
+	}
+	Permissions["ro"] = string(roData)
+
+	// 加载 rw.yaml
+	rwData, err := ioutil.ReadFile("rw.yaml")
+	if err != nil {
+		log.Fatal("加载 rw.yaml 失败:", err)
+	}
+	Permissions["rw"] = string(rwData)
+
+	// 加载 all.yaml
+	allData, err := ioutil.ReadFile("all.yaml")
+	if err != nil {
+		log.Fatal("加载 all.yaml 失败:", err)
+	}
+	Permissions["all"] = string(allData)
 }
 
 // loadConfig 函数：加载配置文件（config.json）
@@ -215,20 +223,20 @@ func newK8sClient(kubeConfigPath string) (*K8sClient, error) {
 	}, nil
 }
 
-// handleMessage 函数：处理Telegram消息
+// handleMessage 函数：处理Telegram消息（实时监听并分析）
 func handleMessage(message *tgbotapi.Message) {
-	if !strings.Contains(message.Text, cfg.TriggerKeyword) {
-		return // 忽略非触发消息
-	}
-
 	userID := message.From.ID
 	username := message.From.UserName
 	isGroup := message.Chat.IsGroup() // 判断是否群聊
 
-	// 从消息中提取意图和权限级别（假设格式：触发词 意图关键词 ro/rw/all）
+	// 从消息中提取意图和权限级别（实时分析聊天内容）
 	parts := strings.Fields(message.Text)
 	intent := ""
-	level := ""
+	level := "rw" // 默认 rw
+	allRoles := []string{"管理", "管理员", "超管", "admin", "运维"}
+	roRoles := []string{"开发", "只读"}
+	hasExplicitLevel := false
+
 	for _, part := range parts {
 		// 匹配意图关键词
 		for iKey, keywords := range cfg.IntentKeywords {
@@ -243,20 +251,39 @@ func handleMessage(message *tgbotapi.Message) {
 			}
 		}
 		if intent != "" {
-			break
+			continue
 		}
-		// 匹配级别
+		// 匹配角色关键词决定权限级别（优先于默认）
+		lowerPart := strings.ToLower(part)
+		for _, r := range allRoles {
+			if strings.Contains(lowerPart, strings.ToLower(r)) {
+				level = "all"
+				hasExplicitLevel = true
+				break
+			}
+		}
+		if hasExplicitLevel {
+			continue
+		}
+		for _, r := range roRoles {
+			if strings.Contains(lowerPart, strings.ToLower(r)) {
+				level = "ro"
+				hasExplicitLevel = true
+				break
+			}
+		}
+		if hasExplicitLevel {
+			continue
+		}
+		// 如果有显式 ro/rw/all，覆盖角色匹配
 		if part == "ro" || part == "rw" || part == "all" {
 			level = part
+			hasExplicitLevel = true
 		}
 	}
+
 	if intent == "" {
-		sendMessage(message.Chat.ID, "无效意图。请使用: "+cfg.TriggerKeyword+" [意图关键词] ro/rw/all\n支持意图: "+strings.Join(getAllIntentKeys(), ", "))
-		return
-	}
-	if level == "" {
-		sendMessage(message.Chat.ID, "无效级别。请使用: "+cfg.TriggerKeyword+" [意图] ro/rw/all")
-		return
+		return // 无意图匹配，忽略消息（不激活机器人）
 	}
 
 	// 检查白名单
@@ -381,12 +408,13 @@ func executeIntent(userID int64, username string, intent string, level string, c
 
 		// 创建Role
 		roleRules := Permissions[level]
+		rules := parseRules(roleRules)
 		createResource(k8sClient, "Role", map[string]interface{}{
 			"metadata": map[string]interface{}{
 				"name":      fmt.Sprintf("%s-role", saName),
 				"namespace": cfg.Namespace,
 			},
-			"rules": parseRules(roleRules), // 解析规则
+			"rules": rules, // 解析规则
 		})
 
 		// 创建RoleBinding
@@ -441,7 +469,8 @@ func executeIntent(userID int64, username string, intent string, level string, c
 		defer os.Remove(kubeFile) // 延迟删除文件
 
 		// 发送到私聊
-		privateChat, err := bot.GetChat(tgbotapi.Chat{ID: userID})
+		privateChatConfig := tgbotapi.GetChatConfig{ChatID: userID}
+		privateChat, err := bot.GetChat(privateChatConfig)
 		if err != nil {
 			log.Printf("获取私聊失败 (env: %s): %v", env, err)
 			errors = append(errors, fmt.Sprintf("%s环境私信发送失败", env))
@@ -506,58 +535,13 @@ func createResource(client *K8sClient, kind string, obj map[string]interface{}) 
 	}
 }
 
-// parseRules 函数：解析RBAC规则字符串为切片（简化版；生产中建议用yaml.Unmarshal）
+// parseRules 函数：解析RBAC规则YAML字符串为切片
 func parseRules(ruleStr string) []interface{} {
-	// 简单YAML解析规则
-	lines := strings.Split(ruleStr, "\n")
-	var rules []interface{}
-	currentRule := make(map[string]interface{})
-	inRule := false
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- ") { // 开始新规则
-			if len(currentRule) > 0 {
-				rules = append(rules, currentRule)
-				currentRule = make(map[string]interface{})
-			}
-			inRule = true
-			// 解析行（简化，实际用yaml库）
-			keyValue := strings.SplitN(line[2:], ":", 2) // 去除"- "后分割
-			if len(keyValue) == 2 {
-				key := strings.TrimSpace(keyValue[0])
-				value := strings.TrimSpace(keyValue[1])
-				if strings.Contains(value, "[") { // 数组处理
-					// 简单数组解析
-					value = strings.Trim(value, "[]")
-					vals := strings.Split(value, ",")
-					for i := range vals {
-						vals[i] = strings.TrimSpace(vals[i])
-					}
-					currentRule[key] = vals
-				} else {
-					currentRule[key] = value
-				}
-			}
-		} else if inRule && strings.Contains(line, ":") {
-			keyValue := strings.SplitN(line, ":", 2)
-			if len(keyValue) == 2 {
-				key := strings.TrimSpace(keyValue[0])
-				value := strings.TrimSpace(keyValue[1])
-				if strings.Contains(value, "[") {
-					value = strings.Trim(value, "[]")
-					vals := strings.Split(value, ",")
-					for i := range vals {
-						vals[i] = strings.TrimSpace(vals[i])
-					}
-					currentRule[key] = vals
-				} else {
-					currentRule[key] = value
-				}
-			}
-		}
-	}
-	if len(currentRule) > 0 {
-		rules = append(rules, currentRule)
+	var rules []map[string]interface{}
+	err := yaml.Unmarshal([]byte(ruleStr), &rules)
+	if err != nil {
+		log.Printf("解析规则YAML失败: %v", err)
+		return nil
 	}
 	return rules
 }
