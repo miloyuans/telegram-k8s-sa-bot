@@ -23,7 +23,8 @@ type Config struct {
 	GroupChatID       int64                   `json:"group_chat_id"`      // 群聊 ID（负数，用于 shell 命令通知）
 	TokenDuration     string                  `json:"token_duration_hours"` // Token 有效时长（小时，默认 15）
 	IntentKeywords    map[string][]string     `json:"intent_keywords"`    // 意图关键字映射，如 {"us-prod": ["美国生产"]}
-	IntentToNamespace map[string][]string     `json:"intent_to_namespace"` // 意图到命名空间映射，支持多个，如 {"us-prod": ["international"]}
+	IntentToEnvs      map[string][]string     `json:"intent_to_envs"`     // 意图到环境映射，支持多个，如 {"us-prod": ["international"]}
+	EnvToKubeConfig   map[string]string       `json:"env_to_kubeconfig"`  // 意图到 kubeconfig 路径映射，如 {"us-prod": "~/.kube/config-us"}
 	UserMap           map[string]int64        `json:"user_map"`           // 用户名到数字用户 ID 映射，如 {"abc": 12345}
 }
 
@@ -79,32 +80,48 @@ func loadConfig() {
 	// 默认意图关键字
 	if cfg.IntentKeywords == nil {
 		cfg.IntentKeywords = map[string][]string{
-			"us-prod":    {"美国生产"},
-			"sg-prod":    {"新加坡生产"},
-			"br-prod":    {"巴西生产"},
-			"sp-prod":    {"圣保罗生产"},
-			"test":       {"测试"},
-			"global-test": {"全球测试"},
+			"us-prod":      {"美国生产"},
+			"sg-prod":      {"新加坡生产"},
+			"br-prod":      {"巴西生产"},
+			"sp-prod":      {"圣保罗生产"},
+			"test":         {"测试"},
+			"global-test":  {"全球测试"},
 			"global-hk-test": {"全球香港测试"},
-			"pre-release": {"预发布"},
-			"us-test":    {"美国测试"},
+			"pre-release":  {"预发布"},
+			"us-test":      {"美国测试"},
 			"global-us-test": {"全球美国测试"},
 		}
 	}
 
-	// 默认意图到命名空间映射（支持多个）
-	if cfg.IntentToNamespace == nil {
-		cfg.IntentToNamespace = map[string][]string{
-			"us-prod":    {"international"},
-			"sg-prod":    {"international"},
-			"br-prod":    {"international"},
-			"sp-prod":    {"international"},
-			"test":       {"international", "global", "pre"},
-			"global-test": {"international", "global", "pre"},
+	// 默认意图到环境映射（支持多个）
+	if cfg.IntentToEnvs == nil {
+		cfg.IntentToEnvs = map[string][]string{
+			"us-prod":      {"international"},
+			"sg-prod":      {"international"},
+			"br-prod":      {"international"},
+			"sp-prod":      {"international"},
+			"test":         {"international", "global", "pre"},
+			"global-test":  {"international", "global", "pre"},
 			"global-hk-test": {"international", "global", "pre"},
-			"pre-release": {"international", "global", "pre"},
-			"us-test":    {"international", "global"},
+			"pre-release":  {"international", "global", "pre"},
+			"us-test":      {"international", "global"},
 			"global-us-test": {"international", "global"},
+		}
+	}
+
+	// 默认意图到 kubeconfig 路径映射
+	if cfg.EnvToKubeConfig == nil {
+		cfg.EnvToKubeConfig = map[string]string{
+			"us-prod":      "~/.kube/config-us",
+			"sg-prod":      "~/.kube/config-hb",
+			"br-prod":      "~/.kube/config-sa",
+			"sp-prod":      "~/.kube/config-sa",
+			"test":         "~/.kube/config-test",
+			"global-test":  "~/.kube/config-test",
+			"global-hk-test": "~/.kube/config-test",
+			"pre-release":  "~/.kube/config-test",
+			"us-test":      "~/.kube/config-ustest",
+			"global-us-test": "~/.kube/config-ustest",
 		}
 	}
 
@@ -127,6 +144,20 @@ func getUserID(username string) int64 {
 		return id
 	}
 	return 0 // 未找到，返回 0 表示无效
+}
+
+// redactedArgs 生成脱敏后的参数字符串（脱敏 token 和 chat_id）
+func redactedArgs(args []string) string {
+	redacted := make([]string, len(args))
+	copy(redacted, args)
+	for i := 0; i < len(redacted)-1; i += 2 {
+		if redacted[i] == "-t" {
+			redacted[i+1] = "***" // 脱敏 token
+		} else if redacted[i] == "-c" {
+			redacted[i+1] = "***" // 脱敏 chat_id
+		}
+	}
+	return strings.Join(redacted, " ")
 }
 
 // handleMessage 处理传入消息
@@ -259,7 +290,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	bot.Request(conf)
 }
 
-// executeIntent 执行意图：触发 ck8sUserconf shell 命令，支持多个命名空间
+// executeIntent 执行意图：触发 ck8sUserconf shell 命令，支持多个环境，并必须传递 kubeconfig 路径
 func executeIntent(userID int64, username, intent, level string, chatID int64) {
 	// 根据用户名获取数字用户 ID
 	numericUserID := getUserID(username)
@@ -268,28 +299,43 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 		return
 	}
 
-	// 获取命名空间列表
-	namespaces, ok := cfg.IntentToNamespace[intent]
-	if !ok || len(namespaces) == 0 {
-		sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的命名空间配置缺失", intent))
+	// 获取环境列表
+	envs, ok := cfg.IntentToEnvs[intent]
+	if !ok || len(envs) == 0 {
+		sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的环境配置缺失", intent))
 		return
 	}
 
-	// 记录成功和失败的命名空间
+	// 获取 kubeconfig 路径（基于意图，必须存在）
+	kubeconfig, kubeOk := cfg.EnvToKubeConfig[intent]
+	if !kubeOk || kubeconfig == "" {
+		sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的 kubeconfig 配置缺失", intent))
+		return
+	}
+
+	// 记录成功和失败的环境
 	var successes, failures []string
 
-	// 为每个命名空间执行命令
-	for _, namespace := range namespaces {
+	// 为每个环境执行命令
+	for _, env := range envs {
 		// 构建 ck8sUserconf 命令参数
 		args := []string{
 			cfg.BaseSAName,                          // <base-sa-name>
-			namespace,                               // <namespace>
+			env,                                     // <env> (作为 namespace)
 			level,                                   // <level>
 			"-t", cfg.BotToken,                      // -t <bot_token>
 			"-c", strconv.FormatInt(cfg.GroupChatID, 10), // -c <group_chat_id>
 			"--user-id", strconv.FormatInt(numericUserID, 10), // --user-id <numeric_user_id>
 			"--user", username,                      // --user <username>
+			"--kubeconfig", kubeconfig,              // --kubeconfig <path> (必须参数)
+			"--delete-local",                        // 默认 --delete-local 参数
 		}
+
+		// 生成脱敏参数日志
+		redacted := redactedArgs(args)
+
+		// 打印日志
+		log.Printf("执行命令 (env: %s, intent: %s): ck8sUserconf %s", env, intent, redacted)
 
 		// 可选：添加 Token 时长作为环境变量（shell 会读取）
 		cmd := exec.Command("ck8sUserconf", args...)
@@ -298,10 +344,10 @@ func executeIntent(userID int64, username, intent, level string, chatID int64) {
 		// 执行命令
 		err := cmd.Run()
 		if err != nil {
-			log.Printf("执行 ck8sUserconf 失败 (namespace: %s): %v", namespace, err)
-			failures = append(failures, namespace)
+			log.Printf("执行 ck8sUserconf 失败 (env: %s): %v", env, err)
+			failures = append(failures, env)
 		} else {
-			successes = append(successes, namespace)
+			successes = append(successes, env)
 		}
 	}
 
