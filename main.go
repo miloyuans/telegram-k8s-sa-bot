@@ -161,7 +161,7 @@ func loadConfig() {
 		}
 	}
 
-	// 确保环境到kubeconfig映射存在（默认填充）
+	// 确保环境到kubeconfig映射存在（默认填充） - 修复重复键
 	if cfg.EnvToKubeConfig == nil {
 		cfg.EnvToKubeConfig = map[string]string{
 			"international": "~/.kube/config-us",
@@ -328,7 +328,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 4 {
 		callbackConfig := tgbotapi.NewCallback(callback.ID, "无效回调")
-		bot.Request(callbackConfig)
+		bot.AnswerCallbackQuery(callbackConfig)
 		return
 	}
 	action, targetUserIDStr, intent, level := parts[0], parts[1], parts[2], parts[3]
@@ -337,7 +337,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	if int64(targetUserID) != userID {
 		// 非目标用户
 		callbackConfig := tgbotapi.NewCallback(callback.ID, "无权限")
-		bot.Request(callbackConfig)
+		bot.AnswerCallbackQuery(callbackConfig)
 		return
 	}
 
@@ -351,13 +351,13 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	}
 	if !isConfirmUser {
 		callbackConfig := tgbotapi.NewCallback(callback.ID, "您无权确认")
-		bot.Request(callbackConfig)
+		bot.AnswerCallbackQuery(callbackConfig)
 		return
 	}
 
 	// 回答回调并删除消息
 	callbackConfig := tgbotapi.NewCallback(callback.ID, "")
-	bot.Request(callbackConfig)
+	bot.AnswerCallbackQuery(callbackConfig)
 	deleteMsg := tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID)
 	bot.Request(deleteMsg)
 
@@ -372,7 +372,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, feedback))
 
 	callbackConfig = tgbotapi.NewCallback(callback.ID, feedback)
-	bot.Request(callbackConfig)
+	bot.AnswerCallbackQuery(callbackConfig)
 }
 
 // executeIntent 函数：执行意图逻辑（为每个环境创建SA、Role、RoleBinding、生成Token和Kubeconfig）
@@ -478,7 +478,7 @@ func executeIntent(userID int64, username string, intent string, level string, c
 		defer os.Remove(kubeFile) // 延迟删除文件
 
 		// 发送到私聊
-		privateChatConfig := tgbotapi.ChatInfoConfig{ChatID: userID}
+		privateChatConfig := tgbotapi.ChatConfig{ID: userID}
 		privateChat, err := bot.GetChat(privateChatConfig)
 		if err != nil {
 			log.Printf("获取私聊失败 (env: %s): %v", env, err)
@@ -524,4 +524,76 @@ func getAllIntentKeys() []string {
 	return keys
 }
 
-// createResource 函数
+// createResource 函数：创建Kubernetes资源（使用指定客户端）
+func createResource(client *K8sClient, kind string, obj map[string]interface{}) {
+	gvr := schema.GroupVersionResource{}
+	switch kind {
+	case "ServiceAccount":
+		gvr = schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}
+	case "Role":
+		gvr = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}
+	case "RoleBinding":
+		gvr = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
+	}
+
+	u := &unstructured.Unstructured{Object: obj}
+	u.SetGroupVersionKind(gvr.GroupVersion().WithKind(kind))
+	ctx := context.Background()
+	_, err := client.DynamicClient.Resource(gvr).Namespace(cfg.Namespace).Create(ctx, u, metav1.CreateOptions{})
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		log.Printf("创建%s失败: %v", kind, err)
+	}
+}
+
+// parseRules 函数：解析RBAC规则YAML字符串为切片
+func parseRules(ruleStr string) []interface{} {
+	var rules []map[string]interface{}
+	err := yaml.Unmarshal([]byte(ruleStr), &rules)
+	if err != nil {
+		log.Printf("解析规则YAML失败: %v", err)
+		return nil
+	}
+	var ruleList []interface{}
+	for _, r := range rules {
+		ruleList = append(ruleList, r)
+	}
+	return ruleList
+}
+
+// generateKubeConfig 函数：生成Kubeconfig YAML字符串
+func generateKubeConfig(server, caData, token, namespace, saName string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: kubernetes
+contexts:
+- context:
+    cluster: kubernetes
+    namespace: %s
+    user: %s
+  name: %s-ctx
+current-context: %s-ctx
+users:
+- name: %s
+  user:
+    token: %s
+`, caData, server, namespace, saName, saName, saName, saName, token)
+}
+
+// sendMessage 函数：发送简单消息
+func sendMessage(chatID int64, text string) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	bot.Send(msg)
+}
+
+// sendNotification 函数：发送通知消息（群聊反馈）
+func sendNotification(chatID int64, username, status string) {
+	msgText := fmt.Sprintf("SA部署@%s: %s", username, status)
+	if strings.Contains(status, "过期") || strings.Contains(status, "Expires") {
+		msgText += " Token将在15小时后过期！！！"
+	}
+	sendMessage(chatID, msgText)
+}
