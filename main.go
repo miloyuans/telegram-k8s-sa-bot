@@ -6,7 +6,6 @@ import (
 	"encoding/base64" // 用于Base64编码/解码
 	"encoding/json"   // 用于JSON序列化/反序列化
 	"fmt"             // 用于格式化输出
-	"io/ioutil"       // 用于文件I/O（已弃用，但为兼容保留；生产中用os.ReadFile等）
 	"log"             // 用于日志记录
 	"os"              // 用于操作系统交互
 	"path/filepath"   // 用于路径处理
@@ -91,21 +90,21 @@ func main() {
 // loadPermissions 函数：从YAML文件加载权限模板
 func loadPermissions() {
 	// 加载 ro.yaml
-	roData, err := ioutil.ReadFile("ro.yaml")
+	roData, err := os.ReadFile("ro.yaml")
 	if err != nil {
 		log.Fatal("加载 ro.yaml 失败:", err)
 	}
 	Permissions["ro"] = string(roData)
 
 	// 加载 rw.yaml
-	rwData, err := ioutil.ReadFile("rw.yaml")
+	rwData, err := os.ReadFile("rw.yaml")
 	if err != nil {
 		log.Fatal("加载 rw.yaml 失败:", err)
 	}
 	Permissions["rw"] = string(rwData)
 
 	// 加载 all.yaml
-	allData, err := ioutil.ReadFile("all.yaml")
+	allData, err := os.ReadFile("all.yaml")
 	if err != nil {
 		log.Fatal("加载 all.yaml 失败:", err)
 	}
@@ -114,7 +113,7 @@ func loadPermissions() {
 
 // loadConfig 函数：加载配置文件（config.json）
 func loadConfig() {
-	data, err := ioutil.ReadFile("config.json") // 读取配置文件
+	data, err := os.ReadFile("config.json") // 读取配置文件
 	if err != nil {
 		log.Fatal("加载配置失败:", err)
 	}
@@ -320,6 +319,7 @@ func handleMessage(message *tgbotapi.Message) {
 }
 
 // handleCallback 函数：处理回调查询（弹窗确认）
+// handleCallback 函数：处理回调查询（弹窗确认）
 func handleCallback(callback *tgbotapi.CallbackQuery) {
 	userID := callback.From.ID
 	username := callback.From.UserName
@@ -327,7 +327,10 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	// 解析回调数据：confirm/reject_userid_intent_level
 	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 4 {
-		callbackConfig := tgbotapi.NewCallback(callback.ID, "无效回调")
+		callbackConfig := tgbotapi.CallbackConfig{
+			CallbackQueryID: callback.ID,
+			Text:            "无效回调",
+		}
 		bot.AnswerCallbackQuery(callbackConfig)
 		return
 	}
@@ -336,7 +339,10 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	targetUserID, _ := strconv.Atoi(targetUserIDStr)
 	if int64(targetUserID) != userID {
 		// 非目标用户
-		callbackConfig := tgbotapi.NewCallback(callback.ID, "无权限")
+		callbackConfig := tgbotapi.CallbackConfig{
+			CallbackQueryID: callback.ID,
+			Text:            "无权限",
+		}
 		bot.AnswerCallbackQuery(callbackConfig)
 		return
 	}
@@ -350,13 +356,18 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		}
 	}
 	if !isConfirmUser {
-		callbackConfig := tgbotapi.NewCallback(callback.ID, "您无权确认")
+		callbackConfig := tgbotapi.CallbackConfig{
+			CallbackQueryID: callback.ID,
+			Text:            "您无权确认",
+		}
 		bot.AnswerCallbackQuery(callbackConfig)
 		return
 	}
 
 	// 回答回调并删除消息
-	callbackConfig := tgbotapi.NewCallback(callback.ID, "")
+	callbackConfig := tgbotapi.CallbackConfig{
+		CallbackQueryID: callback.ID,
+	}
 	bot.AnswerCallbackQuery(callbackConfig)
 	deleteMsg := tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID)
 	bot.Request(deleteMsg)
@@ -371,7 +382,10 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 	}
 	bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, feedback))
 
-	callbackConfig = tgbotapi.NewCallback(callback.ID, feedback)
+	callbackConfig = tgbotapi.CallbackConfig{
+		CallbackQueryID: callback.ID,
+		Text:            feedback,
+	}
 	bot.AnswerCallbackQuery(callbackConfig)
 }
 
@@ -469,7 +483,7 @@ func executeIntent(userID int64, username string, intent string, level string, c
 		// 生成Kubeconfig内容
 		kubeconfigContent := generateKubeConfig(server, caData, saToken, cfg.Namespace, saName)
 		kubeFile := fmt.Sprintf("%s_%s_%s.kubeconfig", username, env, level) // 文件名：username_env_level.kubeconfig
-		err = ioutil.WriteFile(kubeFile, []byte(kubeconfigContent), 0600) // 写入文件，权限600
+		err = os.WriteFile(kubeFile, []byte(kubeconfigContent), 0600) // 写入文件，权限600
 		if err != nil {
 			log.Printf("写入Kubeconfig失败 (env: %s): %v", env, err)
 			errors = append(errors, fmt.Sprintf("%s环境配置生成失败", env))
@@ -478,14 +492,14 @@ func executeIntent(userID int64, username string, intent string, level string, c
 		defer os.Remove(kubeFile) // 延迟删除文件
 
 		// 发送到私聊
-		privateChatConfig := tgbotapi.ChatConfig{ID: userID}
+		privateChatConfig := tgbotapi.ChatInfoConfig{ChatID: userID}
 		privateChat, err := bot.GetChat(privateChatConfig)
 		if err != nil {
 			log.Printf("获取私聊失败 (env: %s): %v", env, err)
 			errors = append(errors, fmt.Sprintf("%s环境私信发送失败", env))
 			continue
 		}
-		fileBytes, _ := ioutil.ReadFile(kubeFile)
+		fileBytes, _ := os.ReadFile(kubeFile)
 		file := tgbotapi.FileBytes{
 			Name:  kubeFile,
 			Bytes: fileBytes,
