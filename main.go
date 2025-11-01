@@ -2,57 +2,40 @@
 package main
 
 import (
-	"context"
-	"encoding/base64"
+	"context" // 保留以防未来使用，但当前未用
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
+	"os/exec"
 	"strconv"
 	"strings"
-	"time"
+	"time" // 保留以防未来使用，但当前未用
 
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	authv1 "k8s.io/api/authentication/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/dynamic"
-	unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"gopkg.in/yaml.v3"
 )
 
+// Config 定义配置文件结构
 type Config struct {
-	BotToken          string              `json:"bot_token"`
-	Whitelist         []string            `json:"whitelist_users"`
-	ConfirmUsers      []string            `json:"confirm_users"`
-	PresetMessage     string              `json:"preset_message"`
-	BaseSAName        string              `json:"base_sa_name"`
-	Namespace         string              `json:"namespace"`
-	KubeConfigPath    string              `json:"kube_config_path"`
-	TokenDuration     string              `json:"token_duration_hours"`
-	IntentToEnvs      map[string][]string `json:"intent_to_envs"`
-	IntentKeywords    map[string][]string `json:"intent_keywords"`
-	EnvToKubeConfig   map[string]string   `json:"env_to_kubeconfig"`
+	BotToken          string            `json:"bot_token"`          // Telegram Bot Token
+	Whitelist         []string          `json:"whitelist_users"`    // 白名单用户名列表（用于群内权限检查）
+	ConfirmUsers      []string          `json:"confirm_users"`      // 确认用户列表（用于 all 权限的二次确认）
+	PresetMessage     string            `json:"preset_message"`     // 预设拒绝消息
+	BaseSAName        string            `json:"base_sa_name"`       // SA 基础名称（用于生成 SA 如 base-ro）
+	GroupChatID       int64             `json:"group_chat_id"`      // 群聊 ID（负数，用于 shell 命令通知）
+	TokenDuration     string            `json:"token_duration_hours"` // Token 有效时长（小时，默认 15）
+	IntentKeywords    map[string][]string `json:"intent_keywords"`   // 意图关键字映射，如 {"us-prod": ["美国生产"]}
+	IntentToNamespace map[string]string `json:"intent_to_namespace"` // 意图到命名空间映射，如 {"us-prod": "international"}
+	UserMap           map[string]int64  `json:"user_map"`           // 用户名到数字用户 ID 映射，如 {"abc": 12345}
 }
 
-var Permissions = map[string]string{}
+// var 声明全局变量
 var cfg Config
 var bot *tgbotapi.BotAPI
 
-type K8sClient struct {
-	Clientset     *kubernetes.Clientset
-	DynamicClient dynamic.Interface
-	Config        *rest.Config
-}
-
+// main 函数：初始化并启动 Bot
 func main() {
-	loadPermissions()
-	loadConfig()
+	loadConfig() // 加载配置文件
 
 	var err error
 	bot, err = tgbotapi.NewBotAPI(cfg.BotToken)
@@ -60,93 +43,111 @@ func main() {
 		log.Fatal("Bot 初始化失败:", err)
 	}
 
+	// 创建更新通道
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
+	// 循环处理更新
 	for update := range updates {
 		if update.Message != nil {
-			handleMessage(update.Message)
+			handleMessage(update.Message) // 处理消息
 		} else if update.CallbackQuery != nil {
-			handleCallback(update.CallbackQuery)
+			handleCallback(update.CallbackQuery) // 处理回调
 		}
 	}
 }
 
-func loadPermissions() {
-	data, _ := os.ReadFile("ro.yaml"); Permissions["ro"] = string(data)
-	data, _ = os.ReadFile("rw.yaml"); Permissions["rw"] = string(data)
-	data, _ = os.ReadFile("all.yaml"); Permissions["all"] = string(data)
-}
-
+// loadConfig 加载并初始化配置
 func loadConfig() {
+	// 读取配置文件
 	data, err := os.ReadFile("config.json")
-	if err != nil { log.Fatal(err) }
-	json.Unmarshal(data, &cfg)
+	if err != nil {
+		log.Fatal("配置文件加载失败:", err)
+	}
+	err = json.Unmarshal(data, &cfg)
+	if err != nil {
+		log.Fatal("JSON 解析失败:", err)
+	}
 
+	// 环境变量覆盖 Token 时长
 	if os.Getenv("TOKEN_DURATION_HOURS") != "" {
 		cfg.TokenDuration = os.Getenv("TOKEN_DURATION_HOURS")
 	}
-	if cfg.TokenDuration == "" { cfg.TokenDuration = "15" }
-
-	if cfg.IntentToEnvs == nil {
-		cfg.IntentToEnvs = map[string][]string{
-			"us-prod": {"international"}, "test": {"international", "global", "pre"},
-		}
+	if cfg.TokenDuration == "" {
+		cfg.TokenDuration = "15" // 默认 15 小时
 	}
+
+	// 默认意图关键字
 	if cfg.IntentKeywords == nil {
 		cfg.IntentKeywords = map[string][]string{
-			"us-prod": {"美国生产"}, "test": {"测试"},
+			"us-prod": {"美国生产"},
+			"test":    {"测试"},
 		}
 	}
-	if cfg.EnvToKubeConfig == nil {
-		cfg.EnvToKubeConfig = map[string]string{
-			"international": "~/.kube/config-us",
-			"global":        "~/.kube/config-test",
+
+	// 默认意图到命名空间映射
+	if cfg.IntentToNamespace == nil {
+		cfg.IntentToNamespace = map[string]string{
+			"us-prod": "international",
+			"test":    "pre",
 		}
 	}
+
+	// 默认用户映射（示例，需要根据实际配置）
+	if cfg.UserMap == nil {
+		cfg.UserMap = map[string]int64{
+			"abc": 12345, // 示例：用户名 abc 对应用户 ID 12345
+		}
+	}
+
+	// 确保群聊 ID 已设置
+	if cfg.GroupChatID == 0 {
+		log.Fatal("group_chat_id 必须在配置文件中设置")
+	}
 }
 
-func getKubeConfigForIntent(intent string) string {
-	m := map[string]string{
-		"us-prod": "~/.kube/config-us", "sg-prod": "~/.kube/config-hb",
-		"test": "~/.kube/config-test", "us-test": "~/.kube/config-ustest",
+// getUserID 根据用户名获取数字用户 ID
+func getUserID(username string) int64 {
+	if id, ok := cfg.UserMap[username]; ok {
+		return id
 	}
-	if p, ok := m[intent]; ok { return p }
-	return cfg.KubeConfigPath
+	return 0 // 未找到，返回 0 表示无效
 }
 
-func newK8sClient(path string) (*K8sClient, error) {
-	if strings.HasPrefix(path, "~") {
-		home := os.Getenv("HOME")
-		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
-	}
-	config, err := clientcmd.BuildConfigFromFlags("", path)
-	if err != nil {
-		config, err = rest.InClusterConfig()
-		if err != nil { return nil, err }
-	}
-	cs, _ := kubernetes.NewForConfig(config)
-	dc, _ := dynamic.NewForConfig(config)
-	return &K8sClient{Clientset: cs, DynamicClient: dc, Config: config}, nil
-}
-
+// handleMessage 处理传入消息
 func handleMessage(m *tgbotapi.Message) {
+	// 获取用户信息
 	userID := m.From.ID
 	username := m.From.UserName
-	parts := strings.Fields(m.Text)
-	intent, level := "", "rw"
+	if username == "" {
+		sendMessage(m.Chat.ID, "用户名为空，无法处理")
+		return
+	}
 
+	// 解析消息文本
+	parts := strings.Fields(m.Text)
+	intent, level := "", "rw" // 默认 level 为 rw
+
+	// 分析意图和权限级别
 	for _, p := range parts {
+		// 匹配意图关键字
 		for k, kws := range cfg.IntentKeywords {
 			for _, kw := range kws {
 				if strings.Contains(strings.ToLower(p), strings.ToLower(kw)) {
-					intent = k; break
+					intent = k
+					break
 				}
 			}
+			if intent != "" {
+				break
+			}
 		}
-		if intent != "" { continue }
+		if intent != "" {
+			continue
+		}
 
+		// 匹配权限级别
 		pLower := strings.ToLower(p)
 		if strings.Contains(pLower, "all") || strings.Contains(pLower, "admin") {
 			level = "all"
@@ -157,17 +158,25 @@ func handleMessage(m *tgbotapi.Message) {
 		}
 	}
 
-	if intent == "" { return }
+	// 如果未匹配到意图，直接返回
+	if intent == "" {
+		return
+	}
 
+	// 检查白名单（基于用户名）
 	isWhite := false
 	for _, w := range cfg.Whitelist {
-		if w == username { isWhite = true; break }
+		if w == username {
+			isWhite = true
+			break
+		}
 	}
 	if !isWhite {
 		sendMessage(m.Chat.ID, cfg.PresetMessage)
 		return
 	}
 
+	// 如果是 all 权限，需要弹窗确认
 	if level == "all" {
 		msg := tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("确认 '%s' 的 all 权限？", intent))
 		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
@@ -178,12 +187,14 @@ func handleMessage(m *tgbotapi.Message) {
 		)
 		bot.Send(msg)
 	} else {
-		executeIntent(userID, username, intent, level, m.Chat.ID, m.Chat.IsGroup())
+		// 直接执行
+		executeIntent(userID, username, intent, level, m.Chat.ID)
 	}
 }
 
-// handleCallback 函数
+// handleCallback 处理回调查询（确认弹窗）
 func handleCallback(callback *tgbotapi.CallbackQuery) {
+	// 解析回调数据
 	parts := strings.Split(callback.Data, "_")
 	if len(parts) < 3 {
 		bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
@@ -203,7 +214,7 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// 确认权限
+	// 检查确认权限（基于用户名）
 	isConfirm := false
 	for _, u := range cfg.ConfirmUsers {
 		if u == callback.From.UserName {
@@ -219,136 +230,75 @@ func handleCallback(callback *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// 删除消息
+	// 删除确认消息
 	bot.Request(tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID))
 
-	// 执行
+	// 根据动作执行
 	if action == "confirm" {
-		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "正在部署..."))
-		executeIntent(callback.From.ID, callback.From.UserName, intent, "all", callback.Message.Chat.ID, true)
+		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "正在触发部署..."))
+		executeIntent(callback.From.ID, callback.From.UserName, intent, "all", callback.Message.Chat.ID)
 	} else {
 		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "已取消"))
 	}
 
-	// 最终弹窗
+	// 响应回调
 	bot.AnswerCallbackQuery(tgbotapi.AnswerCallbackQueryConfig{
 		CallbackQueryID: callback.ID,
 		Text:            "操作完成",
 	})
 }
 
-func executeIntent(userID int64, username, intent, level string, chatID int64, isGroup bool) {
-	envs := cfg.IntentToEnvs[intent]
-	client, err := newK8sClient(getKubeConfigForIntent(intent))
-	if err != nil {
-		sendNotification(chatID, username, "K8s 连接失败")
+// executeIntent 执行意图：触发 ck8sUserconf shell 命令
+func executeIntent(userID int64, username, intent, level string, chatID int64) {
+	// 根据用户名获取数字用户 ID
+	numericUserID := getUserID(username)
+	if numericUserID == 0 {
+		sendNotification(chatID, username, "用户 ID 配置错误，无法执行")
 		return
 	}
 
-	ctx := context.Background()
-	_, _ = client.Clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: cfg.Namespace},
-	}, metav1.CreateOptions{})
-
-	var successes, failures []string
-	for _, env := range envs {
-		saName := fmt.Sprintf("%s-%s-%s", cfg.BaseSAName, env, level)
-		createResource(client, "ServiceAccount", map[string]interface{}{
-			"metadata": map[string]interface{}{"name": saName, "namespace": cfg.Namespace},
-		})
-		createResource(client, "Role", map[string]interface{}{
-			"metadata": map[string]interface{}{"name": saName + "-role", "namespace": cfg.Namespace},
-			"rules": parseRules(Permissions[level]),
-		})
-		createResource(client, "RoleBinding", map[string]interface{}{
-			"metadata": map[string]interface{}{"name": saName + "-rb", "namespace": cfg.Namespace},
-			"subjects": []interface{}{map[string]interface{}{
-				"kind": "ServiceAccount", "name": saName, "namespace": cfg.Namespace,
-			}},
-			"roleRef": map[string]interface{}{
-				"kind": "Role", "name": saName + "-role", "apiGroup": "rbac.authorization.k8s.io",
-			},
-		})
-
-		dur, _ := time.ParseDuration(cfg.TokenDuration + "h")
-		tokenResp, err := client.Clientset.CoreV1().ServiceAccounts(cfg.Namespace).CreateToken(
-			ctx, saName, &authv1.TokenRequest{Spec: authv1.TokenRequestSpec{ExpirationSeconds: &[]int64{int64(dur.Seconds())}[0]}}, metav1.CreateOptions{})
-		if err != nil {
-			failures = append(failures, env)
-			continue
-		}
-
-		kubeCfg := generateKubeConfig(client.Config.Host, base64.StdEncoding.EncodeToString(client.Config.TLSClientConfig.CAData),
-			tokenResp.Status.Token, cfg.Namespace, saName)
-		fileName := fmt.Sprintf("%s_%s_%s.kubeconfig", username, env, level)
-		os.WriteFile(fileName, []byte(kubeCfg), 0600)
-		defer os.Remove(fileName)
-
-		chat, _ := bot.GetChat(tgbotapi.ChatInfoConfig{ChatConfig: tgbotapi.ChatConfig{ChatID: userID}})
-		fileBytes, _ := os.ReadFile(fileName)
-		msg := tgbotapi.NewDocument(chat.ID, tgbotapi.FileBytes{Name: fileName, Bytes: fileBytes})
-		msg.Caption = fmt.Sprintf("[%s] %s权限，%s小时后过期", fileName, level, cfg.TokenDuration)
-		bot.Send(msg)
-		successes = append(successes, env)
+	// 获取命名空间
+	namespace, ok := cfg.IntentToNamespace[intent]
+	if !ok {
+		sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的命名空间配置缺失", intent))
+		return
 	}
 
-	if len(successes) > 0 {
-		sendNotification(chatID, username, fmt.Sprintf("成功: %s", strings.Join(successes, ",")))
+	// 构建 ck8sUserconf 命令参数
+	args := []string{
+		cfg.BaseSAName,                          // <base-sa-name>
+		namespace,                               // <namespace>
+		level,                                   // <level>
+		"-t", cfg.BotToken,                      // -t <bot_token>
+		"-c", strconv.FormatInt(cfg.GroupChatID, 10), // -c <group_chat_id>
+		"--user-id", strconv.FormatInt(numericUserID, 10), // --user-id <numeric_user_id>
+		"--user", username,                      // --user <username>
 	}
-	if len(failures) > 0 {
-		sendNotification(chatID, username, fmt.Sprintf("失败: %s", strings.Join(failures, ",")))
+
+	// 可选：添加 Token 时长作为环境变量（shell 会读取）
+	cmd := exec.Command("ck8sUserconf", args...)
+	cmd.Env = append(os.Environ(), fmt.Sprintf("TOKEN_DURATION=%s", cfg.TokenDuration))
+
+	// 执行命令
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("执行 ck8sUserconf 失败: %v", err)
+		sendNotification(chatID, username, fmt.Sprintf("执行失败: %v", err))
+		return
 	}
+
+	// 成功通知
+	sendNotification(chatID, username, fmt.Sprintf("已触发 %s %s 权限部署（Token 时长: %s 小时）", intent, level, cfg.TokenDuration))
 }
 
-func createResource(c *K8sClient, kind string, obj map[string]interface{}) {
-	gvr := schema.GroupVersionResource{}
-	switch kind {
-	case "ServiceAccount": gvr = schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}
-	case "Role": gvr = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}
-	case "RoleBinding": gvr = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
-	}
-	u := &unstructured.Unstructured{Object: obj}
-	u.SetGroupVersionKind(gvr.GroupVersion().WithKind(kind))
-	_, err := c.DynamicClient.Resource(gvr).Namespace(cfg.Namespace).Create(context.Background(), u, metav1.CreateOptions{})
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
-		log.Printf("创建 %s 失败: %v", kind, err)
-	}
-}
-
-func parseRules(s string) []interface{} {
-	var rules []map[string]interface{}
-	yaml.Unmarshal([]byte(s), &rules)
-	var out []interface{}
-	for _, r := range rules { out = append(out, r) }
-	return out
-}
-
-func generateKubeConfig(server, ca, token, ns, sa string) string {
-	return fmt.Sprintf(`apiVersion: v1
-kind: Config
-clusters:
-- cluster:
-    certificate-authority-data: %s
-    server: %s
-  name: kubernetes
-contexts:
-- context:
-    cluster: kubernetes
-    namespace: %s
-    user: %s
-  name: %s-ctx
-current-context: %s-ctx
-users:
-- name: %s
-  user:
-    token: %s
-`, ca, server, ns, sa, sa, sa, sa, token)
-}
-
+// sendMessage 发送简单消息
 func sendMessage(chatID int64, text string) {
-	bot.Send(tgbotapi.NewMessage(chatID, text))
+	msg := tgbotapi.NewMessage(chatID, text)
+	bot.Send(msg)
 }
 
+// sendNotification 发送通知消息（群内 @username）
 func sendNotification(chatID int64, user, msg string) {
-	sendMessage(chatID, fmt.Sprintf("SA部署@%s: %s", user, msg))
+	notification := fmt.Sprintf("SA部署@%s: %s", user, msg)
+	sendMessage(chatID, notification)
 }
