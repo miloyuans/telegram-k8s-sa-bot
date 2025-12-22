@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,14 +16,17 @@ import (
 
 // Config 定义配置文件结构
 type Config struct {
-	BotToken        string              `json:"bot_token"`          // Telegram Bot Token
-	PresetMessage   string              `json:"preset_message"`     // 预设拒绝消息
-	BaseSAName      string              `json:"base_sa_name"`       // SA 基础名称（用于生成 SA 如 base-ro）
-	GroupChatID     int64               `json:"group_chat_id"`      // 群聊 ID（负数，用于 shell 命令通知）
-	TokenDuration   string              `json:"token_duration_hours"` // Token 有效时长（小时，默认 15）
-	IntentKeywords  map[string][]string `json:"intent_keywords"`    // 意图关键字映射，如 {"us-prod": ["美国生产"]}
-	IntentToEnvs    map[string][]string `json:"intent_to_envs"`     // 意图到环境映射，支持多个，如 {"us-prod": ["international"]}
-	EnvToKubeConfig map[string]string   `json:"env_to_kubeconfig"`  // 意图到 kubeconfig 路径映射，如 {"us-prod": "~/.kube/config-us"}
+	BotToken          string                  `json:"bot_token"`          // Telegram Bot Token
+	Whitelist         []string                `json:"whitelist_users"`    // 白名单用户名列表（用于群内权限检查）
+	ConfirmUsers      []string                `json:"confirm_users"`      // 确认用户列表（用于 all 权限的二次确认）
+	PresetMessage     string                  `json:"preset_message"`     // 预设拒绝消息
+	BaseSAName        string                  `json:"base_sa_name"`       // SA 基础名称（用于生成 SA 如 base-ro）
+	GroupChatID       int64                   `json:"group_chat_id"`      // 群聊 ID（负数，用于 shell 命令通知）
+	TokenDuration     string                  `json:"token_duration_hours"` // Token 有效时长（小时，默认 15）
+	IntentKeywords    map[string][]string     `json:"intent_keywords"`    // 意图关键字映射，如 {"us-prod": ["美国生产"]}
+	IntentToEnvs      map[string][]string     `json:"intent_to_envs"`     // 意图到环境映射，支持多个，如 {"us-prod": ["international"]}
+	EnvToKubeConfig   map[string]string       `json:"env_to_kubeconfig"`  // 意图到 kubeconfig 路径映射，如 {"us-prod": "~/.kube/config-us"}
+	UserMap           map[string]int64        `json:"user_map"`           // 用户名到数字用户 ID 映射，如 {"abc": 12345}
 }
 
 // var 声明全局变量
@@ -51,6 +53,8 @@ func main() {
 	for update := range updates {
 		if update.Message != nil {
 			handleMessage(update.Message) // 处理消息
+		} else if update.CallbackQuery != nil {
+			handleCallback(update.CallbackQuery) // 处理回调
 		}
 	}
 }
@@ -78,15 +82,15 @@ func loadConfig() {
 	// 默认意图关键字
 	if cfg.IntentKeywords == nil {
 		cfg.IntentKeywords = map[string][]string{
-			"us-prod":        {"美国生产"},
-			"sg-prod":        {"新加坡生产"},
-			"br-prod":        {"巴西生产"},
-			"sp-prod":        {"圣保罗生产"},
-			"test":           {"测试"},
-			"global-test":    {"全球测试"},
+			"us-prod":      {"美国生产"},
+			"sg-prod":      {"新加坡生产"},
+			"br-prod":      {"巴西生产"},
+			"sp-prod":      {"圣保罗生产"},
+			"test":         {"测试"},
+			"global-test":  {"全球测试"},
 			"global-hk-test": {"全球香港测试"},
-			"pre-release":    {"预发布"},
-			"us-test":        {"美国测试"},
+			"pre-release":  {"预发布"},
+			"us-test":      {"美国测试"},
 			"global-us-test": {"全球美国测试"},
 		}
 	}
@@ -94,15 +98,15 @@ func loadConfig() {
 	// 默认意图到环境映射（支持多个）
 	if cfg.IntentToEnvs == nil {
 		cfg.IntentToEnvs = map[string][]string{
-			"us-prod":        {"international"},
-			"sg-prod":        {"international"},
-			"br-prod":        {"international"},
-			"sp-prod":        {"international"},
-			"test":           {"international", "global", "pre"},
-			"global-test":    {"international", "global", "pre"},
+			"us-prod":      {"international"},
+			"sg-prod":      {"international"},
+			"br-prod":      {"international"},
+			"sp-prod":      {"international"},
+			"test":         {"international", "global", "pre"},
+			"global-test":  {"international", "global", "pre"},
 			"global-hk-test": {"international", "global", "pre"},
-			"pre-release":    {"international", "global", "pre"},
-			"us-test":        {"international", "global"},
+			"pre-release":  {"international", "global", "pre"},
+			"us-test":      {"international", "global"},
 			"global-us-test": {"international", "global"},
 		}
 	}
@@ -110,16 +114,23 @@ func loadConfig() {
 	// 默认意图到 kubeconfig 路径映射
 	if cfg.EnvToKubeConfig == nil {
 		cfg.EnvToKubeConfig = map[string]string{
-			"us-prod":        "~/.kube/config-us",
-			"sg-prod":        "~/.kube/config-hb",
-			"br-prod":        "~/.kube/config-sa",
-			"sp-prod":        "~/.kube/config-sa",
-			"test":           "~/.kube/config-test",
-			"global-test":    "~/.kube/config-test",
+			"us-prod":      "~/.kube/config-us",
+			"sg-prod":      "~/.kube/config-hb",
+			"br-prod":      "~/.kube/config-sa",
+			"sp-prod":      "~/.kube/config-sa",
+			"test":         "~/.kube/config-test",
+			"global-test":  "~/.kube/config-test",
 			"global-hk-test": "~/.kube/config-test",
-			"pre-release":    "~/.kube/config-test",
-			"us-test":        "~/.kube/config-ustest",
+			"pre-release":  "~/.kube/config-test",
+			"us-test":      "~/.kube/config-ustest",
 			"global-us-test": "~/.kube/config-ustest",
+		}
+	}
+
+	// 默认用户映射（示例，需要根据实际配置）
+	if cfg.UserMap == nil {
+		cfg.UserMap = map[string]int64{
+			"abc": 12345, // 示例：用户名 abc 对应用户 ID 12345
 		}
 	}
 
@@ -129,34 +140,12 @@ func loadConfig() {
 	}
 }
 
-// sanitizeUsername 格式化用户名：小写 + 只保留字母数字 - + 特殊字符转 -
-func sanitizeUsername(username string) string {
-	if username == "" {
-		return "unknown-user"
+// getUserID 根据用户名获取数字用户 ID
+func getUserID(username string) int64 {
+	if id, ok := cfg.UserMap[username]; ok {
+		return id
 	}
-
-	// 转为小写
-	lower := strings.ToLower(username)
-
-	// 将所有非字母数字字符替换为 -
-	reg := regexp.MustCompile(`[^a-z0-9]+`)
-	replaced := reg.ReplaceAllString(lower, "-")
-
-	// 去除首尾 -
-	trimmed := strings.Trim(replaced, "-")
-
-	// 防止为空
-	if trimmed == "" {
-		return "user"
-	}
-
-	// 限制长度（可选，推荐 <63 字符）
-	if len(trimmed) > 50 {
-		trimmed = trimmed[:50]
-		trimmed = strings.TrimSuffix(trimmed, "-")
-	}
-
-	return trimmed
+	return 0 // 未找到，返回 0 表示无效
 }
 
 // redactedArgs 生成脱敏后的参数字符串（脱敏 token 和 chat_id）
@@ -245,6 +234,19 @@ func handleMessage(m *tgbotapi.Message) {
 		return
 	}
 
+	// 检查白名单（基于用户名）
+	isWhite := false
+	for _, w := range cfg.Whitelist {
+		if w == username {
+			isWhite = true
+			break
+		}
+	}
+	if !isWhite {
+		sendMessage(m.Chat.ID, cfg.PresetMessage)
+		return
+	}
+
 	// 生成key
 	key := fmt.Sprintf("%d_%s_%s", userID, intent, level)
 
@@ -257,23 +259,107 @@ func handleMessage(m *tgbotapi.Message) {
 	}
 	addMsgToDelete(key, sentAnalysis.MessageID)
 
-	// 直接执行（默认开放权限，无需审批）
-	executeIntentWithCleanup(userID, username, intent, level, m.Chat.ID, key)
+	// 如果是 all 权限，需要弹窗确认
+	if level == "all" {
+		confirmMsg := tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("确认 '%s' 的 all 权限？", intent))
+		confirmMsg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("确认", fmt.Sprintf("confirm_%d_%s_all", userID, intent)),
+				tgbotapi.NewInlineKeyboardButtonData("拒绝", fmt.Sprintf("reject_%d_%s_all", userID, intent)),
+			),
+		)
+		sentConfirm, err := bot.Send(confirmMsg)
+		if err != nil {
+			log.Printf("发送确认消息失败: %v", err)
+			return
+		}
+		addMsgToDelete(key, sentConfirm.MessageID)
+	} else {
+		// 直接执行
+		executeIntentWithCleanup(userID, username, intent, level, m.Chat.ID, key)
+	}
+}
+
+// handleCallback 处理回调查询（确认弹窗）
+func handleCallback(callback *tgbotapi.CallbackQuery) {
+	// 解析回调数据
+	parts := strings.Split(callback.Data, "_")
+	if len(parts) < 3 {
+		conf := tgbotapi.NewCallback(callback.ID, "无效操作")
+		bot.Request(conf)
+		return
+	}
+
+	action, uidStr, intent := parts[0], parts[1], parts[2]
+	uid, err := strconv.ParseInt(uidStr, 10, 64)
+	if err != nil {
+		conf := tgbotapi.NewCallback(callback.ID, "无效操作")
+		bot.Request(conf)
+		return
+	}
+	if uid != callback.From.ID {
+		conf := tgbotapi.NewCallback(callback.ID, "无权限")
+		bot.Request(conf)
+		return
+	}
+
+	// 检查确认权限（基于用户名）
+	isConfirm := false
+	for _, u := range cfg.ConfirmUsers {
+		if u == callback.From.UserName {
+			isConfirm = true
+			break
+		}
+	}
+	if !isConfirm {
+		conf := tgbotapi.NewCallback(callback.ID, "无权确认")
+		bot.Request(conf)
+		return
+	}
+
+	// 生成key
+	key := fmt.Sprintf("%d_%s_all", callback.From.ID, intent)
+
+	// 删除确认消息（已读状态）
+	bot.Request(tgbotapi.NewDeleteMessage(callback.Message.Chat.ID, callback.Message.MessageID))
+
+	// 根据动作执行
+	if action == "confirm" {
+		deployMsg := tgbotapi.NewMessage(callback.Message.Chat.ID, "正在触发部署...")
+		sentDeploy, err := bot.Send(deployMsg)
+		if err == nil {
+			addMsgToDelete(key, sentDeploy.MessageID)
+		}
+		executeIntentWithCleanup(callback.From.ID, callback.From.UserName, intent, "all", callback.Message.Chat.ID, key)
+	} else {
+		bot.Send(tgbotapi.NewMessage(callback.Message.Chat.ID, "已取消"))
+		deleteMsgs(key, callback.Message.Chat.ID) // 拒绝时删除相关消息
+	}
+
+	// 响应回调
+	conf := tgbotapi.NewCallback(callback.ID, "操作完成")
+	bot.Request(conf)
 }
 
 // executeIntentWithCleanup 执行意图：触发 ck8sUserconf shell 命令，支持多个环境，并必须传递 kubeconfig 路径
 // 使用 goroutine 防止单个命令挂起阻塞 Bot，并捕获输出日志
 // 字符串拼接统一使用英文连字符 -
-// 执行完成后调用 cleanup 删除消息，并私聊用户 + 群里@通知
+// 在拼接 dynamicBaseSAName 时，将用户名中的 _ 转换为 -
+// 执行完成后调用 cleanup 删除消息
 func executeIntentWithCleanup(userID int64, username, intent, level string, chatID int64, key string) {
-	// 直接使用 Telegram 提供的 userID
-	numericUserID := userID
+	// 根据用户名获取数字用户 ID
+	numericUserID := getUserID(username)
+	if numericUserID == 0 {
+		sendNotification(chatID, username, "用户 ID 配置错误，无法执行")
+		deleteMsgs(key, chatID)
+		return
+	}
 
-	// 自动格式化用户名
-	usernameForSA := sanitizeUsername(username)
+	// 处理用户名：将 _ 转换为 -
+	sanitizedUsername := strings.ReplaceAll(username, "_", "-")
 
 	// 动态生成 base_sa_name，使用英文连字符 -
-	dynamicBaseSAName := fmt.Sprintf("%s-%s-%s", usernameForSA, cfg.BaseSAName, intent)
+	dynamicBaseSAName := fmt.Sprintf("%s-%s-%s", sanitizedUsername, cfg.BaseSAName, intent)
 
 	// 获取环境列表
 	envs, ok := cfg.IntentToEnvs[intent]
@@ -303,7 +389,7 @@ func executeIntentWithCleanup(userID int64, username, intent, level string, chat
 
 			// 构建 ck8sUserconf 命令参数
 			args := []string{
-				dynamicBaseSAName,                       // <dynamic-base-sa-name> 如 john-doe-dev-Bc1-eks-us-prod
+				dynamicBaseSAName,                       // <dynamic-base-sa-name> 如 abc-Bc1-eks-us-prod
 				env,                                     // <env> (作为 namespace)
 				level,                                   // <level>
 				"-t", cfg.BotToken,                      // -t <bot_token>
@@ -360,10 +446,6 @@ func executeIntentWithCleanup(userID int64, username, intent, level string, chat
 
 	if len(successes) > 0 {
 		sendNotification(chatID, username, fmt.Sprintf("已触发 %s %s 权限部署（Token 时长: %s 小时）", intent, level, cfg.TokenDuration))
-		// 私聊用户
-		sendPrivateMessage(userID, fmt.Sprintf("您的 %s %s 权限已开通，请查收配置文件。", intent, level))
-		// 群里@用户通知已私聊
-		sendNotification(chatID, username, "已私聊您，请查看私信。")
 	}
 
 	// 完成后删除消息
@@ -379,17 +461,8 @@ func sendMessage(chatID int64, text string) {
 	}
 }
 
-// sendPrivateMessage 发送私聊消息
-func sendPrivateMessage(userID int64, text string) {
-	msg := tgbotapi.NewMessage(userID, text)
-	_, err := bot.Send(msg)
-	if err != nil {
-		log.Printf("发送私聊消息失败 (userID: %d): %v", userID, err)
-	}
-}
-
 // sendNotification 发送通知消息（群内 @username）
 func sendNotification(chatID int64, user, msg string) {
-	notification := fmt.Sprintf("@%s: %s", user, msg)
+	notification := fmt.Sprintf("SA部署@%s: %s", user, msg)
 	sendMessage(chatID, notification)
 }
