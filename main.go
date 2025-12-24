@@ -2,29 +2,29 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"log"
-	"os"
-	"os/exec"
-	"regexp"
-	"strconv"
-	"strings"
-	"sync"
+        "encoding/json"
+        "fmt"
+        "log"
+        "os"
+        "os/exec"
+        "regexp"
+        "strconv"
+        "strings"
+        "sync"
 
-	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
+        "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 // Config 定义配置文件结构
 type Config struct {
-	BotToken        string              `json:"bot_token"`          // Telegram Bot Token
-	PresetMessage   string              `json:"preset_message"`     // 预设拒绝消息
-	BaseSAName      string              `json:"base_sa_name"`       // SA 基础名称（用于生成 SA 如 base-ro）
-	GroupChatID     int64               `json:"group_chat_id"`      // 群聊 ID（负数，用于 shell 命令通知）
-	TokenDuration   string              `json:"token_duration_hours"` // Token 有效时长（小时，默认 15）
-	IntentKeywords  map[string][]string `json:"intent_keywords"`    // 意图关键字映射，如 {"us-prod": ["美国生产"]}
-	IntentToEnvs    map[string][]string `json:"intent_to_envs"`     // 意图到环境映射，支持多个，如 {"us-prod": ["international"]}
-	EnvToKubeConfig map[string]string   `json:"env_to_kubeconfig"`  // 意图到 kubeconfig 路径映射，如 {"us-prod": "~/.kube/config-us"}
+        BotToken        string              `json:"bot_token"`          // Telegram Bot Token
+        PresetMessage   string              `json:"preset_message"`     // 预设拒绝消息
+        BaseSAName      string              `json:"base_sa_name"`       // SA 基础名称（用于生成 SA 如 base-ro）
+        GroupChatID     int64               `json:"group_chat_id"`      // 群聊 ID（负数，用于 shell 命令通知）
+        TokenDuration   string              `json:"token_duration_hours"` // Token 有效时长（小时，默认 15）
+        IntentKeywords  map[string][]string `json:"intent_keywords"`    // 意图关键字映射，如 {"us-prod": ["美国生产"]}
+        IntentToEnvs    map[string][]string `json:"intent_to_envs"`     // 意图到环境映射，支持多个，如 {"us-prod": ["international"]}
+        EnvToKubeConfig map[string]string   `json:"env_to_kubeconfig"`  // 意图到 kubeconfig 路径映射，如 {"us-prod": "~/.kube/config-us"}
 }
 
 // var 声明全局变量
@@ -34,231 +34,231 @@ var msgToDelete sync.Map // 存储待删除消息ID，key: string (userID_intent
 
 // main 函数：初始化并启动 Bot
 func main() {
-	loadConfig() // 加载配置文件
+        loadConfig() // 加载配置文件
 
-	var err error
-	bot, err = tgbotapi.NewBotAPI(cfg.BotToken)
-	if err != nil {
-		log.Fatal("Bot 初始化失败:", err)
-	}
+        var err error
+        bot, err = tgbotapi.NewBotAPI(cfg.BotToken)
+        if err != nil {
+                log.Fatal("Bot 初始化失败:", err)
+        }
 
-	// 创建更新通道
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := bot.GetUpdatesChan(u)
+        // 创建更新通道
+        u := tgbotapi.NewUpdate(0)
+        u.Timeout = 60
+        updates := bot.GetUpdatesChan(u)
 
-	// 循环处理更新
-	for update := range updates {
-		if update.Message != nil {
-			handleMessage(update.Message) // 处理消息
-		}
-	}
+        // 循环处理更新
+        for update := range updates {
+                if update.Message != nil {
+                        handleMessage(update.Message) // 处理消息
+                }
+        }
 }
 
 // loadConfig 加载并初始化配置
 func loadConfig() {
-	// 读取配置文件
-	data, err := os.ReadFile("config.json")
-	if err != nil {
-		log.Fatal("配置文件加载失败:", err)
-	}
-	err = json.Unmarshal(data, &cfg)
-	if err != nil {
-		log.Fatal("JSON 解析失败:", err)
-	}
+        // 读取配置文件
+        data, err := os.ReadFile("config.json")
+        if err != nil {
+                log.Fatal("配置文件加载失败:", err)
+        }
+        err = json.Unmarshal(data, &cfg)
+        if err != nil {
+                log.Fatal("JSON 解析失败:", err)
+        }
 
-	// 环境变量覆盖 Token 时长
-	if os.Getenv("TOKEN_DURATION_HOURS") != "" {
-		cfg.TokenDuration = os.Getenv("TOKEN_DURATION_HOURS")
-	}
-	if cfg.TokenDuration == "" {
-		cfg.TokenDuration = "15" // 默认 15 小时
-	}
+        // 环境变量覆盖 Token 时长
+        if os.Getenv("TOKEN_DURATION_HOURS") != "" {
+                cfg.TokenDuration = os.Getenv("TOKEN_DURATION_HOURS")
+        }
+        if cfg.TokenDuration == "" {
+                cfg.TokenDuration = "15" // 默认 15 小时
+        }
 
-	// 默认意图关键字
-	if cfg.IntentKeywords == nil {
-		cfg.IntentKeywords = map[string][]string{
-			"us-prod":        {"美国生产"},
-			"sg-prod":        {"新加坡生产"},
-			"br-prod":        {"巴西生产"},
-			"sp-prod":        {"圣保罗生产"},
-			"test":           {"测试"},
-			"global-test":    {"全球测试"},
-			"global-hk-test": {"全球香港测试"},
-			"pre-release":    {"预发布"},
-			"us-test":        {"美国测试"},
-			"global-us-test": {"全球美国测试"},
-		}
-	}
+        // 默认意图关键字
+        if cfg.IntentKeywords == nil {
+                cfg.IntentKeywords = map[string][]string{
+                        "us-prod":        {"美国生产"},
+                        "sg-prod":        {"新加坡生产"},
+                        "br-prod":        {"巴西生产"},
+                        "sp-prod":        {"圣保罗生产"},
+                        "test":           {"测试"},
+                        "global-test":    {"全球测试"},
+                        "global-hk-test": {"全球香港测试"},
+                        "pre-release":    {"预发布"},
+                        "us-test":        {"美国测试"},
+                        "global-us-test": {"全球美国测试"},
+                }
+        }
 
-	// 默认意图到环境映射（支持多个）
-	if cfg.IntentToEnvs == nil {
-		cfg.IntentToEnvs = map[string][]string{
-			"us-prod":        {"international"},
-			"sg-prod":        {"international"},
-			"br-prod":        {"international"},
-			"sp-prod":        {"international"},
-			"test":           {"international", "global", "pre"},
-			"global-test":    {"international", "global", "pre"},
-			"global-hk-test": {"international", "global", "pre"},
-			"pre-release":    {"international", "global", "pre"},
-			"us-test":        {"international", "global"},
-			"global-us-test": {"international", "global"},
-		}
-	}
+        // 默认意图到环境映射（支持多个）
+        if cfg.IntentToEnvs == nil {
+                cfg.IntentToEnvs = map[string][]string{
+                        "us-prod":        {"international"},
+                        "sg-prod":        {"international"},
+                        "br-prod":        {"international"},
+                        "sp-prod":        {"international"},
+                        "test":           {"international", "global", "pre"},
+                        "global-test":    {"international", "global", "pre"},
+                        "global-hk-test": {"international", "global", "pre"},
+                        "pre-release":    {"international", "global", "pre"},
+                        "us-test":        {"international", "global"},
+                        "global-us-test": {"international", "global"},
+                }
+        }
 
-	// 默认意图到 kubeconfig 路径映射
-	if cfg.EnvToKubeConfig == nil {
-		cfg.EnvToKubeConfig = map[string]string{
-			"us-prod":        "~/.kube/config-us",
-			"sg-prod":        "~/.kube/config-hb",
-			"br-prod":        "~/.kube/config-sa",
-			"sp-prod":        "~/.kube/config-sa",
-			"test":           "~/.kube/config-test",
-			"global-test":    "~/.kube/config-test",
-			"global-hk-test": "~/.kube/config-test",
-			"pre-release":    "~/.kube/config-test",
-			"us-test":        "~/.kube/config-ustest",
-			"global-us-test": "~/.kube/config-ustest",
-		}
-	}
+        // 默认意图到 kubeconfig 路径映射
+        if cfg.EnvToKubeConfig == nil {
+                cfg.EnvToKubeConfig = map[string]string{
+                        "us-prod":        "~/.kube/config-us",
+                        "sg-prod":        "~/.kube/config-hb",
+                        "br-prod":        "~/.kube/config-sa",
+                        "sp-prod":        "~/.kube/config-sa",
+                        "test":           "~/.kube/config-test",
+                        "global-test":    "~/.kube/config-test",
+                        "global-hk-test": "~/.kube/config-test",
+                        "pre-release":    "~/.kube/config-test",
+                        "us-test":        "~/.kube/config-ustest",
+                        "global-us-test": "~/.kube/config-ustest",
+                }
+        }
 
-	// 确保群聊 ID 已设置
-	if cfg.GroupChatID == 0 {
-		log.Fatal("group_chat_id 必须在配置文件中设置")
-	}
+        // 确保群聊 ID 已设置
+        if cfg.GroupChatID == 0 {
+                log.Fatal("group_chat_id 必须在配置文件中设置")
+        }
 }
 
 // sanitizeUsername 格式化用户名：小写 + 只保留字母数字 - + 特殊字符转 -
 func sanitizeUsername(username string) string {
-	if username == "" {
-		return "unknown-user"
-	}
+        if username == "" {
+                return "unknown-user"
+        }
 
-	// 转为小写
-	lower := strings.ToLower(username)
+        // 转为小写
+        lower := strings.ToLower(username)
 
-	// 将所有非字母数字字符替换为 -
-	reg := regexp.MustCompile(`[^a-z0-9]+`)
-	replaced := reg.ReplaceAllString(lower, "-")
+        // 将所有非字母数字字符替换为 -
+        reg := regexp.MustCompile(`[^a-z0-9]+`)
+        replaced := reg.ReplaceAllString(lower, "-")
 
-	// 去除首尾 -
-	trimmed := strings.Trim(replaced, "-")
+        // 去除首尾 -
+        trimmed := strings.Trim(replaced, "-")
 
-	// 防止为空
-	if trimmed == "" {
-		return "user"
-	}
+        // 防止为空
+        if trimmed == "" {
+                return "user"
+        }
 
-	// 限制长度（可选，推荐 <63 字符）
-	if len(trimmed) > 50 {
-		trimmed = trimmed[:50]
-		trimmed = strings.TrimSuffix(trimmed, "-")
-	}
+        // 限制长度（可选，推荐 <63 字符）
+        if len(trimmed) > 50 {
+                trimmed = trimmed[:50]
+                trimmed = strings.TrimSuffix(trimmed, "-")
+        }
 
-	return trimmed
+        return trimmed
 }
 
 // redactedArgs 生成脱敏后的参数字符串（脱敏 token 和 chat_id）
 func redactedArgs(args []string) string {
-	redacted := make([]string, len(args))
-	copy(redacted, args)
-	for i := 0; i < len(redacted)-1; i += 2 {
-		if redacted[i] == "-t" {
-			redacted[i+1] = "***" // 脱敏 token
-		} else if redacted[i] == "-c" {
-			redacted[i+1] = "***" // 脱敏 chat_id
-		}
-	}
-	return strings.Join(redacted, " ")
+        redacted := make([]string, len(args))
+        copy(redacted, args)
+        for i := 0; i < len(redacted)-1; i += 2 {
+                if redacted[i] == "-t" {
+                        redacted[i+1] = "***" // 脱敏 token
+                } else if redacted[i] == "-c" {
+                        redacted[i+1] = "***" // 脱敏 chat_id
+                }
+        }
+        return strings.Join(redacted, " ")
 }
 
 // addMsgToDelete 添加消息ID到待删除列表
 func addMsgToDelete(key string, msgID int) {
-	if existing, ok := msgToDelete.Load(key); ok {
-		ids := existing.([]int)
-		ids = append(ids, msgID)
-		msgToDelete.Store(key, ids)
-	} else {
-		msgToDelete.Store(key, []int{msgID})
-	}
+        if existing, ok := msgToDelete.Load(key); ok {
+                ids := existing.([]int)
+                ids = append(ids, msgID)
+                msgToDelete.Store(key, ids)
+        } else {
+                msgToDelete.Store(key, []int{msgID})
+        }
 }
 
 // deleteMsgs 删除指定key下的所有消息并清理
 func deleteMsgs(key string, chatID int64) {
-	if ids, ok := msgToDelete.Load(key); ok {
-		for _, id := range ids.([]int) {
-			_, err := bot.Request(tgbotapi.NewDeleteMessage(chatID, id))
-			if err != nil {
-				log.Printf("删除消息失败 (ID: %d): %v", id, err)
-			}
-		}
-		msgToDelete.Delete(key)
-	}
+        if ids, ok := msgToDelete.Load(key); ok {
+                for _, id := range ids.([]int) {
+                        _, err := bot.Request(tgbotapi.NewDeleteMessage(chatID, id))
+                        if err != nil {
+                                log.Printf("删除消息失败 (ID: %d): %v", id, err)
+                        }
+                }
+                msgToDelete.Delete(key)
+        }
 }
 
 // handleMessage 处理传入消息
 func handleMessage(m *tgbotapi.Message) {
-	// 获取用户信息
-	userID := m.From.ID
-	username := m.From.UserName
-	if username == "" {
-		sendMessage(m.Chat.ID, "用户名为空，无法处理")
-		return
-	}
+        // 获取用户信息
+        userID := m.From.ID
+        username := m.From.UserName
+        if username == "" {
+                sendMessage(m.Chat.ID, "用户名为空，无法处理")
+                return
+        }
 
-	// 解析消息文本
-	parts := strings.Fields(m.Text)
-	intent, level := "", "rw" // 默认 level 为 rw
+        // 解析消息文本
+        parts := strings.Fields(m.Text)
+        intent, level := "", "rw" // 默认 level 为 rw
 
-	// 分析意图和权限级别
-	for _, p := range parts {
-		// 匹配意图关键字
-		for k, kws := range cfg.IntentKeywords {
-			for _, kw := range kws {
-				if strings.Contains(strings.ToLower(p), strings.ToLower(kw)) {
-					intent = k
-					break
-				}
-			}
-			if intent != "" {
-				break
-			}
-		}
-		if intent != "" {
-			continue
-		}
+        // 分析意图和权限级别
+        for _, p := range parts {
+                // 匹配意图关键字
+                for k, kws := range cfg.IntentKeywords {
+                        for _, kw := range kws {
+                                if strings.Contains(strings.ToLower(p), strings.ToLower(kw)) {
+                                        intent = k
+                                        break
+                                }
+                        }
+                        if intent != "" {
+                                break
+                        }
+                }
+                if intent != "" {
+                        continue
+                }
 
-		// 匹配权限级别
-		pLower := strings.ToLower(p)
-		if strings.Contains(pLower, "all") || strings.Contains(pLower, "admin") {
-			level = "all"
-		} else if strings.Contains(pLower, "ro") || strings.Contains(pLower, "只读") {
-			level = "ro"
-		} else if p == "ro" || p == "rw" || p == "all" {
-			level = p
-		}
-	}
+                // 匹配权限级别
+                pLower := strings.ToLower(p)
+                if strings.Contains(pLower, "all") || strings.Contains(pLower, "admin") {
+                        level = "all"
+                } else if strings.Contains(pLower, "ro") || strings.Contains(pLower, "只读") {
+                        level = "ro"
+                } else if p == "ro" || p == "rw" || p == "all" {
+                        level = p
+                }
+        }
 
-	// 如果未匹配到意图，直接返回
-	if intent == "" {
-		return
-	}
+        // 如果未匹配到意图，直接返回
+        if intent == "" {
+                return
+        }
 
-	// 生成key
-	key := fmt.Sprintf("%d_%s_%s", userID, intent, level)
+        // 生成key
+        key := fmt.Sprintf("%d_%s_%s", userID, intent, level)
 
-	// 发送“权限申请分析中...”消息
-	analysisMsg := tgbotapi.NewMessage(m.Chat.ID, "权限申请分析中...")
-	sentAnalysis, err := bot.Send(analysisMsg)
-	if err != nil {
-		log.Printf("发送分析消息失败: %v", err)
-		return
-	}
-	addMsgToDelete(key, sentAnalysis.MessageID)
+        // 发送“权限申请分析中...”消息
+        analysisMsg := tgbotapi.NewMessage(m.Chat.ID, "权限申请分析中...")
+        sentAnalysis, err := bot.Send(analysisMsg)
+        if err != nil {
+                log.Printf("发送分析消息失败: %v", err)
+                return
+        }
+        addMsgToDelete(key, sentAnalysis.MessageID)
 
-	// 直接执行（默认开放权限，无需审批）
-	executeIntentWithCleanup(userID, username, intent, level, m.Chat.ID, key)
+        // 直接执行（默认开放权限，无需审批）
+        executeIntentWithCleanup(userID, username, intent, level, m.Chat.ID, key)
 }
 
 // executeIntentWithCleanup 执行意图：触发 ck8sUserconf shell 命令，支持多个环境，并必须传递 kubeconfig 路径
@@ -266,130 +266,141 @@ func handleMessage(m *tgbotapi.Message) {
 // 字符串拼接统一使用英文连字符 -
 // 执行完成后调用 cleanup 删除消息，并私聊用户 + 群里@通知
 func executeIntentWithCleanup(userID int64, username, intent, level string, chatID int64, key string) {
-	// 直接使用 Telegram 提供的 userID
-	numericUserID := userID
+        // 直接使用 Telegram 提供的 userID
+        numericUserID := userID
 
-	// 自动格式化用户名
-	usernameForSA := sanitizeUsername(username)
+        // 自动格式化用户名
+        usernameForSA := sanitizeUsername(username)
 
-	// 动态生成 base_sa_name，使用英文连字符 -
-	dynamicBaseSAName := fmt.Sprintf("%s-%s-%s", usernameForSA, cfg.BaseSAName, intent)
+        // 动态生成 base_sa_name，使用英文连字符 -
+        dynamicBaseSAName := fmt.Sprintf("%s-%s-%s", usernameForSA, cfg.BaseSAName, intent)
 
-	// 获取环境列表
-	envs, ok := cfg.IntentToEnvs[intent]
-	if !ok || len(envs) == 0 {
-		sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的环境配置缺失", intent))
-		deleteMsgs(key, chatID)
-		return
-	}
+        // 获取环境列表
+        envs, ok := cfg.IntentToEnvs[intent]
+        if !ok || len(envs) == 0 {
+                sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的环境配置缺失", intent))
+                deleteMsgs(key, chatID)
+                return
+        }
 
-	// 获取 kubeconfig 路径（基于意图，必须存在）
-	kubeconfig, kubeOk := cfg.EnvToKubeConfig[intent]
-	if !kubeOk || kubeconfig == "" {
-		sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的 kubeconfig 配置缺失", intent))
-		deleteMsgs(key, chatID)
-		return
-	}
+        // 获取 kubeconfig 路径（基于意图，必须存在）
+        kubeconfig, kubeOk := cfg.EnvToKubeConfig[intent]
+        if !kubeOk || kubeconfig == "" {
+                sendNotification(chatID, username, fmt.Sprintf("意图 '%s' 的 kubeconfig 配置缺失", intent))
+                deleteMsgs(key, chatID)
+                return
+        }
 
-	// 使用 WaitGroup 和 channels 异步执行每个环境命令
-	var wg sync.WaitGroup
-	successCh := make(chan string, len(envs))
-	failCh := make(chan string, len(envs))
+        // 使用 WaitGroup 和 channels 异步执行每个环境命令
+        var wg sync.WaitGroup
+        successCh := make(chan string, len(envs))
+        failCh := make(chan string, len(envs))
 
-	for _, env := range envs {
-		wg.Add(1)
-		go func(env string) {
-			defer wg.Done()
+        for _, env := range envs {
+                wg.Add(1)
+                go func(env string) {
+                        defer wg.Done()
 
-			// 构建 ck8sUserconf 命令参数
-			args := []string{
-				dynamicBaseSAName,                       // <dynamic-base-sa-name> 如 john-doe-dev-Bc1-eks-us-prod
-				env,                                     // <env> (作为 namespace)
-				level,                                   // <level>
-				"-t", cfg.BotToken,                      // -t <bot_token>
-				"-c", strconv.FormatInt(cfg.GroupChatID, 10), // -c <group_chat_id>
-				"--user-id", strconv.FormatInt(numericUserID, 10), // --user-id <numeric_user_id>
-				"--user", username,                      // --user <username>
-				"--kubeconfig", kubeconfig,              // --kubeconfig <path> (必须参数)
-				"--delete-local",                        // 默认 --delete-local 参数
-			}
+                        // 构建 ck8sUserconf 命令参数
+                        args := []string{
+                                dynamicBaseSAName,                       // <dynamic-base-sa-name> 如 john-doe-dev-Bc1-eks-us-prod
+                                env,                                     // <env> (作为 namespace)
+                                level,                                   // <level>
+                                "-t", cfg.BotToken,                      // -t <bot_token>
+                                "-c", strconv.FormatInt(cfg.GroupChatID, 10), // -c <group_chat_id>
+                                "--user-id", strconv.FormatInt(numericUserID, 10), // --user-id <numeric_user_id>
+                                "--user", username,                      // --user <username>
+                                "--kubeconfig", kubeconfig,              // --kubeconfig <path> (必须参数)
+                                "--delete-local",                        // 默认 --delete-local 参数
+                        }
 
-			// 生成脱敏参数日志
-			redacted := redactedArgs(args)
+                        // 生成脱敏参数日志
+                        redacted := redactedArgs(args)
 
-			// 打印日志
-			log.Printf("执行命令 (env: %s, intent: %s): ck8sUserconf %s", env, intent, redacted)
+                        // 打印日志
+                        log.Printf("执行命令 (env: %s, intent: %s): ck8sUserconf %s", env, intent, redacted)
 
-			// 添加 Token 时长作为环境变量
-			cmd := exec.Command("ck8sUserconf", args...)
-			cmd.Env = append(os.Environ(), fmt.Sprintf("TOKEN_DURATION=%sh", cfg.TokenDuration))
+                        // 添加 Token 时长作为环境变量
+                        cmd := exec.Command("ck8sUserconf", args...)
+                        cmd.Env = append(os.Environ(), fmt.Sprintf("TOKEN_DURATION=%sh", cfg.TokenDuration))
 
-			// 执行命令并捕获输出
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				log.Printf("执行 ck8sUserconf 失败 (env: %s): %v\n输出: %s", env, err, string(output))
-				failCh <- env
-			} else {
-				log.Printf("执行 ck8sUserconf 成功 (env: %s)\n输出: %s", env, string(output))
-				successCh <- env
-			}
-		}(env)
-	}
+                        // 执行命令并捕获输出
+                        output, err := cmd.CombinedOutput()
+                        if err != nil {
+                                log.Printf("执行 ck8sUserconf 失败 (env: %s): %v\n输出: %s", env, err, string(output))
+                                failCh <- env
+                        } else {
+                                log.Printf("执行 ck8sUserconf 成功 (env: %s)\n输出: %s", env, string(output))
+                                successCh <- env
+                        }
+                }(env)
+        }
 
-	// 等待所有 goroutine 完成
-	wg.Wait()
-	close(successCh)
-	close(failCh)
+        // 等待所有 goroutine 完成
+        wg.Wait()
+        close(successCh)
+        close(failCh)
 
-	// 收集结果
-	var successes, failures []string
-	for s := range successCh {
-		successes = append(successes, s)
-	}
-	for f := range failCh {
-		failures = append(failures, f)
-	}
+        // 收集结果
+        var successes, failures []string
+        for s := range successCh {
+                successes = append(successes, s)
+        }
+        for f := range failCh {
+                failures = append(failures, f)
+        }
 
-	// 汇总通知
-	if len(successes) > 0 {
-		sendNotification(chatID, username, fmt.Sprintf("成功: %s", strings.Join(successes, ",")))
-	}
-	if len(failures) > 0 {
-		sendNotification(chatID, username, fmt.Sprintf("失败: %s", strings.Join(failures, ",")))
-	}
+        // 汇总通知
+        if len(successes) > 0 {
+                sendNotification(chatID, username, fmt.Sprintf("成功: %s", strings.Join(successes, ",")))
+        }
+        if len(failures) > 0 {
+                sendNotification(chatID, username, fmt.Sprintf("失败: %s", strings.Join(failures, ",")))
+        }
 
-	if len(successes) > 0 {
-		sendNotification(chatID, username, fmt.Sprintf("已触发 %s %s 权限部署（Token 时长: %s 小时）", intent, level, cfg.TokenDuration))
-		// 私聊用户
-		sendPrivateMessage(userID, fmt.Sprintf("您的 %s %s 权限已开通，请查收配置文件。", intent, level))
-		// 群里@用户通知已私聊
-		sendNotification(chatID, username, "已私聊您，请查看私信。")
-	}
+        if len(successes) > 0 {
+                sendNotification(chatID, username, fmt.Sprintf("已触发 %s %s 权限部署（Token 时长: %s 小时）", intent, level, cfg.TokenDuration))
+                // 私聊用户
+				sendPrivateMessage(userID, fmt.Sprintf("您的 %s %s 权限已开通... 请查收配置文件。", intent, level), chatID, username)
+                //sendPrivateMessage(userID, fmt.Sprintf("您的 %s %s 权限已开通，请查收配置文件。", intent, level))
+                // 群里@用户通知已私聊
+                sendNotification(chatID, username, "已私聊您，请查看私信。")
+        }
 
-	// 完成后删除消息
-	deleteMsgs(key, chatID)
+        // 完成后删除消息
+        deleteMsgs(key, chatID)
 }
 
 // sendMessage 发送简单消息
 func sendMessage(chatID int64, text string) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	_, err := bot.Send(msg)
-	if err != nil {
-		log.Printf("发送消息失败: %v", err)
-	}
+        msg := tgbotapi.NewMessage(chatID, text)
+        _, err := bot.Send(msg)
+        if err != nil {
+                log.Printf("发送消息失败: %v", err)
+        }
 }
 
 // sendPrivateMessage 发送私聊消息
 func sendPrivateMessage(userID int64, text string) {
-	msg := tgbotapi.NewMessage(userID, text)
-	_, err := bot.Send(msg)
-	if err != nil {
-		log.Printf("发送私聊消息失败 (userID: %d): %v", userID, err)
-	}
+        msg := tgbotapi.NewMessage(userID, text)
+        _, err := bot.Send(msg)
+        if err != nil {
+                log.Printf("发送私聊消息失败 (userID: %d): %v", userID, err)
+        }
 }
 
-// sendNotification 发送通知消息（群内 @username）
-func sendNotification(chatID int64, user, msg string) {
-	notification := fmt.Sprintf("@%s: %s", user, msg)
-	sendMessage(chatID, notification)
+// sendPrivateMessage 发送私聊消息
+func sendPrivateMessage(userID int64, text string, originalChatID int64, username string) {
+    msg := tgbotapi.NewMessage(userID, text)
+    _, err := bot.Send(msg)
+    if err != nil {
+        log.Printf("发送私聊消息失败 (userID: %d): %v", userID, err)
+        
+        // 检查是否是 403 错误
+        if apiErr, ok := err.(tgbotapi.Error); ok && apiErr.Code == 403 {
+            // 如果私聊失败，在群里提醒用户
+            tipMsg := fmt.Sprintf("@%s 无法私聊您，请先私聊 Bot 并点击 Start，然后重试。", username)
+            sendMessage(originalChatID, tipMsg)
+        }
+    }
 }
